@@ -1,0 +1,78 @@
+name: Build IPA
+
+on:
+  workflow_dispatch:
+    inputs:
+      ipa_url:
+        description: "Direct URL to a decrypted Chess.com .ipa"
+        required: true
+        type: string
+      label:
+        description: "Label for the output filename (e.g. ios16, ios17)"
+        required: true
+        default: "ios17"
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download decrypted IPA
+        run: |
+          curl -fL --retry 3 -o chess.ipa "${{ inputs.ipa_url }}"
+          [ -s chess.ipa ] || { echo "::error::downloaded IPA is empty"; exit 1; }
+
+      - name: Read Chess version + set output name
+        run: |
+          unzip -qq chess.ipa -d _ver
+          PLIST="$(find _ver/Payload -maxdepth 2 -name Info.plist | head -1)"
+          VER="$(plutil -extract CFBundleShortVersionString raw -o - "$PLIST" 2>/dev/null || echo unknown)"
+          rm -rf _ver
+          echo "CHESS_VER=$VER" >> "$GITHUB_ENV"
+          echo "OUT=ChessAssistant_v2.3_Chess${VER}_${{ inputs.label }}.ipa" >> "$GITHUB_ENV"
+          echo "output: ChessAssistant_v2.3_Chess${VER}_${{ inputs.label }}.ipa"
+
+      - name: Download Chess Assistant .deb
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download latest --repo "$GITHUB_REPOSITORY" --pattern '*.deb' --dir . --clobber
+          mv com.chess.assistant_*.deb chess-assistant.deb
+          ls -la chess-assistant.deb
+
+      - name: Install cyan
+        run: |
+          brew install ldid
+          pipx install --force https://github.com/asdfzxcvbn/pyzule-rw/archive/main.zip
+
+      - name: Inject tweak into IPA
+        run: |
+          cyan -i chess.ipa -o "$OUT" \
+               -uwef chess-assistant.deb -n "Chess" -b com.chess.iphone
+          ls -la "$OUT"
+
+      - name: Bundle Maia model into app
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download maia-model --repo "$GITHUB_REPOSITORY" --pattern 'maia3_5m.mlpackage.zip' --output model.zip --clobber
+          rm -rf work && mkdir work && cd work
+          unzip -qq "../$OUT"
+          APP="$(find Payload -maxdepth 1 -name '*.app' -print -quit)"
+          unzip -qq ../model.zip -d "$APP"
+          test -d "$APP/maia3_5m.mlpackage"
+          echo "bundled model into $APP"
+          rm -f "../$OUT"
+          zip -qry "../$OUT" Payload
+
+      - name: Publish IPA to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload latest "$OUT" --repo "$GITHUB_REPOSITORY" --clobber
+          gh release upload v2.3 "$OUT" --repo "$GITHUB_REPOSITORY" --clobber || true
