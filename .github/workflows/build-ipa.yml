@@ -34,8 +34,8 @@ jobs:
           VER="$(plutil -extract CFBundleShortVersionString raw -o - "$PLIST" 2>/dev/null || echo unknown)"
           rm -rf _ver
           echo "CHESS_VER=$VER" >> "$GITHUB_ENV"
-          echo "OUT=ChessAssistant_v2.3_Chess${VER}_${{ inputs.label }}.ipa" >> "$GITHUB_ENV"
-          echo "output: ChessAssistant_v2.3_Chess${VER}_${{ inputs.label }}.ipa"
+          echo "OUT=ChessAssistant_v2.4_Chess${VER}_${{ inputs.label }}.ipa" >> "$GITHUB_ENV"
+          echo "output: ChessAssistant_v2.4_Chess${VER}_${{ inputs.label }}.ipa"
 
       - name: Download Chess Assistant .deb
         env:
@@ -75,4 +75,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release upload latest "$OUT" --repo "$GITHUB_REPOSITORY" --clobber
-          gh release upload v2.3 "$OUT" --repo "$GITHUB_REPOSITORY" --clobber || true
+          gh release upload v2.4 "$OUT" --repo "$GITHUB_REPOSITORY" --clobber || true

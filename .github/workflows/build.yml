@@ -65,6 +65,6 @@ jobs:
           gh release delete latest --yes --cleanup-tag || true
           gh release create latest "$DEB" \
             --title "Chess Assistant (rolling build)" \
-            --notes "Rolling dev build. Use the v2.3 release for the stable download." \
+            --notes "Rolling dev build. Use the v2.4 release for the stable download." \
             --prerelease
-          gh release upload v2.3 "$DEB" --clobber || true
+          gh release upload v2.4 "$DEB" --clobber || true

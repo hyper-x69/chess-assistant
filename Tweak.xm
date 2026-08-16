@@ -2824,7 +2824,7 @@ static void installBoardHooks(void) {
     gLoadTime = [NSDate date];
     gOrigLayouts = [NSMutableDictionary dictionary];
     loadPrefs();
-    dbg(@"loaded v2.3 (SF16 + Maia3)");
+    dbg(@"loaded v2.4 (SF16 + Maia3)");
     EngineStart();
 
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
