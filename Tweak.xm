@@ -1532,6 +1532,30 @@ static void fetchMove(NSString *fen) {
                 });
             });
         });
+
+        if (gTrackQuality) {
+            NSInteger gdepth = eloToDepth(gElo);
+            EngineGo([fen UTF8String], (int)gdepth, (int)gElo, 2,
+                     ^(const EngineLine *lines, int count) {
+                BOOL hasScore = (count > 0) ? lines[0].hasScore : NO;
+                BOOL lmate = (count > 0) ? lines[0].isMate : NO;
+                int  lscore = (count > 0) ? lines[0].score : 0;
+                double secondWhite = 0; BOOL have2nd = NO;
+                if (count >= 2 && lines[1].hasScore && !lines[1].isMate) {
+                    double cp = lines[1].score / 100.0;
+                    secondWhite = stmWhite ? cp : -cp;
+                    have2nd = YES;
+                }
+                double rawWhite = 0; BOOL mate = NO;
+                if (hasScore) {
+                    if (lmate) mate = YES;
+                    else { double cp = lscore / 100.0; rawWhite = stmWhite ? cp : -cp; }
+                }
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    noteUserEval(snap, mate ? 0 : rawWhite, !mate && hasScore, secondWhite, have2nd);
+                });
+            });
+        }
         return;
     }
 
