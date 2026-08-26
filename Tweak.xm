@@ -2967,6 +2967,28 @@ static NSString *buildBotFEN(UIView *board, int *outUserColor) {
         if (pcColor[i] == 2) ch = (char)(ch + 32);
         bd[rankIdx][file] = ch;
     }
+
+    int wpN = 0, bpN = 0;
+    double wpSum = 0, bpSum = 0;
+    BOOL illegal = NO;
+    for (int r = 0; r < 8; r++) {
+        for (int f = 0; f < 8; f++) {
+            char ch = bd[r][f];
+            if (ch == 'P') { wpSum += r; wpN++; if (r == 0) illegal = YES; }
+            else if (ch == 'p') { bpSum += r; bpN++; if (r == 7) illegal = YES; }
+        }
+    }
+    BOOL statInverted = (wpN >= 4 && bpN >= 4 && (wpSum / wpN) - (bpSum / bpN) > 2.0);
+    if (illegal || statInverted) {
+        char rot[8][8];
+        for (int r = 0; r < 8; r++)
+            for (int f = 0; f < 8; f++) rot[r][f] = bd[7 - r][7 - f];
+        memcpy(bd, rot, sizeof(bd));
+        flipped = !flipped;
+        dbg([NSString stringWithFormat:@"orientation corrected (illegal=%d stat=%d) -> flipped=%d",
+             illegal, statInverted, flipped]);
+    }
+
     gForcedFlip = flipped ? 1 : 0;
 
     NSMutableString *pl = [NSMutableString string];
