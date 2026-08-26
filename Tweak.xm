@@ -1900,6 +1900,7 @@ static void updateEvalBar(void) {
 }
 
 static BOOL detectBoardFlipped(UIView *board) {
+    if (gForcedFlip >= 0) return gForcedFlip ? YES : NO;
     @try {
         SEL flipSel = NSSelectorFromString(@"isFlipped");
         if ([board respondsToSelector:flipSel]) {
@@ -1915,7 +1916,6 @@ static BOOL detectBoardFlipped(UIView *board) {
     } @catch (NSException *e) {
         dbg([NSString stringWithFormat:@"flip detect err: %@", e.reason]);
     }
-    if (gForcedFlip >= 0) return gForcedFlip ? YES : NO;
     return NO;
 }
 
