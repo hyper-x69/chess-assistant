@@ -82,7 +82,7 @@ public:
 InBuf  gIn;
 OutBuf gOut;
 
-#define MAXPV 4
+#define MAXPV 8
 struct Cand { std::string move; bool hasScore = false; bool isMate = false; int score = 0; bool filled = false; };
 
 struct Req { std::string fen; int depth; int elo; int multipv; EngineResultBlock cb; };

@@ -1108,9 +1108,9 @@ static NSString *eloTierName(NSInteger e) {    if (e < 600)  return @"Novice";  
     if (e < 2800) return @"IM / GM";       if (e < 3200) return @"Super-GM";
     if (e < 3500) return @"Engine";        return @"Maximum";
 }
-// Maia human-like range — the model is trained on games between ~800 and 2000 ELO
-static const NSInteger kMaiaLevels[] = {900,1000,1100,1200,1300,1400,1500,1600,1700,1800,1900,2000};
-static const int kMaiaLevelCount = 12;
+static const NSInteger kMaiaLevels[] = {600,700,800,900,1000,1100,1200,1300,1400,1500,1600,1700,
+                                        1800,1900,2000,2100,2200,2300,2400,2500,2600,2700,2800,2900};
+static const int kMaiaLevelCount = 24;
 
 static const NSInteger *activeEloLevels(int *outCount) {
     if (gUseMaia) { *outCount = kMaiaLevelCount; return kMaiaLevels; }
@@ -2384,6 +2384,33 @@ static NSString *buildPGN(void) {
     return pgn;
 }
 
+static int humanizedPickIndex(const EngineLine *lines, int count, int elo) {
+    if (count < 2 || elo >= 2000) return 0;
+    if (!lines[0].hasScore || lines[0].isMate) return 0;
+
+    double T = (2000.0 - (double)elo) / 6.0;
+    if (T < 1.0) return 0;
+    double maxLoss = 60.0 + (2000.0 - (double)elo) * 0.60;
+    if (maxLoss > 900.0) maxLoss = 900.0;
+
+    int n = count > 8 ? 8 : count;
+    double w[8]; double sum = 0;
+    for (int i = 0; i < n; i++) {
+        w[i] = 0;
+        if (!lines[i].hasScore || lines[i].isMate) continue;
+        double loss = (double)(lines[0].score - lines[i].score);
+        if (loss < 0) loss = 0;
+        if (loss > maxLoss) continue;
+        w[i] = exp(-loss / T);
+        sum += w[i];
+    }
+    if (sum <= 0) return 0;
+    double r = ((double)arc4random_uniform(1000000) / 1000000.0) * sum;
+    double acc = 0;
+    for (int i = 0; i < n; i++) { acc += w[i]; if (w[i] > 0 && r <= acc) return i; }
+    return 0;
+}
+
 static void fetchMove(NSString *fen) {
     if (!gEnabled || !fen.length) return;
     if (!fenHasBothKings(fen)) return;
@@ -2465,17 +2492,22 @@ static void fetchMove(NSString *fen) {
          [fen substringToIndex:MIN(fen.length, 45)]]);
 
     int multipv = gTrackQuality ? MAX((int)gArrowCount, 2) : (int)gArrowCount;
+    if (gElo < 1600) multipv = MAX(multipv, 8);
+    else if (gElo < 2000) multipv = MAX(multipv, 4);
     EngineGo([fen UTF8String], (int)depth, (int)gElo, multipv,
              ^(const EngineLine *lines, int count) {
 
-        NSString *bm = (count > 0) ? [NSString stringWithUTF8String:lines[0].move] : nil;
+        int pick = (count > 0) ? humanizedPickIndex(lines, count, (int)gElo) : 0;
+        if (pick > 0) dbg([NSString stringWithFormat:@"humanized: played #%d of %d", pick + 1, count]);
+        NSString *bm = (count > 0) ? [NSString stringWithUTF8String:lines[pick].move] : nil;
         BOOL hasScore = (count > 0) ? lines[0].hasScore : NO;
         BOOL lmate = (count > 0) ? lines[0].isMate : NO;
         int  lscore = (count > 0) ? lines[0].score : 0;
 
         int myColor = gMyColor;
         NSMutableArray *extras = [NSMutableArray array];
-        for (int i = 1; i < count; i++) {
+        for (int i = 0; i < count; i++) {
+            if (i == pick) continue;
             NSString *mv = [NSString stringWithUTF8String:lines[i].move];
             double evWhite = 0; BOOL cm = NO; int cMate = 0;
             if (lines[i].hasScore) {
