@@ -1883,7 +1883,6 @@ static void updateEvalBar(void) {
 }
 
 static BOOL detectBoardFlipped(UIView *board) {
-    if (gForcedFlip >= 0) return gForcedFlip ? YES : NO;
     @try {
         SEL flipSel = NSSelectorFromString(@"isFlipped");
         if ([board respondsToSelector:flipSel]) {
@@ -1899,10 +1898,21 @@ static BOOL detectBoardFlipped(UIView *board) {
     } @catch (NSException *e) {
         dbg([NSString stringWithFormat:@"flip detect err: %@", e.reason]);
     }
+    if (gForcedFlip >= 0) return gForcedFlip ? YES : NO;
     return NO;
 }
 
 #pragma mark - Auto Play (synthetic touches)
+
+static int fenSideToMove(NSString *fen) {
+    NSArray *parts = [fen componentsSeparatedByString:@" "];
+    if (parts.count < 2) return -1;
+    NSString *f = [parts[1] lowercaseString];
+    if ([f isEqualToString:@"b"]) return 1;
+    if ([f isEqualToString:@"w"]) return 0;
+    return -1;
+}
+
 
 static NSMutableArray *gFakeTouches = nil;
 
@@ -2039,7 +2049,9 @@ static BOOL playMoveOnBoard(NSString *uci, NSString *fenSnap, UIView *preferredB
     BOOL promo = uci.length > 4;
     CGPoint promoWin = CGPointZero;
     if (promo) {
-        int qSq = (gSide == 1) ? toSq + 8 : toSq - 8;
+        int mover = fenSideToMove(fenSnap);
+        if (mover < 0) mover = gSide;
+        int qSq = (mover == 1) ? toSq + 8 : toSq - 8;
         if (qSq < 0 || qSq > 63) qSq = toSq;
         CGPoint qLocal = squareToPoint(qSq, board.bounds, flipped);
         promoWin = CGPointMake(winRect.origin.x + qLocal.x, winRect.origin.y + qLocal.y);
@@ -2075,6 +2087,10 @@ static void tryAutoPlay(NSString *bestmove, NSString *altMove, NSString *fenSnap
     if (bestmove.length < 4) return;
     if (!fenSnap.length || [fenSnap isEqualToString:gLastAutoPlayed]) return;
 
+    if (gMyColor < 0) { dbg(@"autoplay: color unknown, skip"); return; }
+    int snapSide = fenSideToMove(fenSnap);
+    if (snapSide < 0 || snapSide != gMyColor) { dbg(@"autoplay: not our turn, skip"); return; }
+
     NSString *chosen = bestmove;
     if (gAutoPlaySecondBest && altMove.length >= 4 && ![altMove isEqualToString:bestmove]) {
         uint32_t chance = (uint32_t)MAX(0, MIN(100, (int)gAutoPlaySecondBestPct));
@@ -2097,6 +2113,7 @@ static void tryAutoPlay(NSString *bestmove, NSString *altMove, NSString *fenSnap
         if (!gAutoPlay || !gEnabled) return;
         if (![fenSnap isEqualToString:gLastFen]) return;
         if ([fenSnap isEqualToString:gLastAutoPlayed]) return;
+        if (gMyColor < 0 || snapSide != gMyColor) return;
         if (playMoveOnBoard(chosen, fenSnap, preferredBoard)) {
             gLastAutoPlayed = [fenSnap copy];
             return;
@@ -3694,7 +3711,7 @@ static void installBoardHooks(void) {
     gLoadTime = [NSDate date];
     gOrigLayouts = [NSMutableDictionary dictionary];
     loadPrefs();
-    dbg(@"loaded v2.5.1 (SF18 + Maia3)");
+    dbg(@"loaded v2.5.2 (SF18 + Maia3)");
     EngineStart();
 
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
