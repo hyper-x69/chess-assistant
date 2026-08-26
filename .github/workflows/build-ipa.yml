@@ -34,8 +34,8 @@ jobs:
           VER="$(plutil -extract CFBundleShortVersionString raw -o - "$PLIST" 2>/dev/null || echo unknown)"
           rm -rf _ver
           echo "CHESS_VER=$VER" >> "$GITHUB_ENV"
-          echo "OUT=ChessAssistant_v2.4_Chess${VER}_${{ inputs.label }}.ipa" >> "$GITHUB_ENV"
-          echo "output: ChessAssistant_v2.4_Chess${VER}_${{ inputs.label }}.ipa"
+          echo "OUT=ChessAssistant_v2.5.2_Chess${VER}_${{ inputs.label }}.ipa" >> "$GITHUB_ENV"
+          echo "output: ChessAssistant_v2.5.2_Chess${VER}_${{ inputs.label }}.ipa"
 
       - name: Download Chess Assistant .deb
         env:
@@ -56,23 +56,9 @@ jobs:
                -uwef chess-assistant.deb -n "Chess" -b com.chess.iphone
           ls -la "$OUT"
 
-      - name: Bundle Maia model into app
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release download maia-model --repo "$GITHUB_REPOSITORY" --pattern 'maia3_5m.mlpackage.zip' --output model.zip --clobber
-          rm -rf work && mkdir work && cd work
-          unzip -qq "../$OUT"
-          APP="$(find Payload -maxdepth 1 -name '*.app' -print -quit)"
-          unzip -qq ../model.zip -d "$APP"
-          test -d "$APP/maia3_5m.mlpackage"
-          echo "bundled model into $APP"
-          rm -f "../$OUT"
-          zip -qry "../$OUT" Payload
-
       - name: Publish IPA to release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release upload latest "$OUT" --repo "$GITHUB_REPOSITORY" --clobber
-          gh release upload v2.4 "$OUT" --repo "$GITHUB_REPOSITORY" --clobber || true
+          gh release upload v2.5.2 "$OUT" --repo "$GITHUB_REPOSITORY" --clobber || true
