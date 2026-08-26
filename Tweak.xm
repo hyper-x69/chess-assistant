@@ -81,8 +81,25 @@ static int gBarMateWhite = 0;
 static BOOL gSkipNextTap = NO;
 
 static NSMutableArray *gLog;
+static NSString *gLogPath = nil;
 static void dbg(NSString *msg) {
-    (void)msg;
+    if (!gLog) gLog = [NSMutableArray array];
+    NSString *line = [NSString stringWithFormat:@"[%@] %@",
+        [NSDateFormatter localizedStringFromDate:[NSDate date]
+            dateStyle:NSDateFormatterNoStyle timeStyle:NSDateFormatterMediumStyle], msg];
+    [gLog addObject:line];
+    while (gLog.count > 200) [gLog removeObjectAtIndex:0];
+
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        gLogPath = [[NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject]
+                    stringByAppendingPathComponent:@"chessassist.log"];
+        [@"" writeToFile:gLogPath atomically:NO encoding:NSUTF8StringEncoding error:nil];
+    });
+    if (gLogPath) {
+        FILE *fp = fopen(gLogPath.fileSystemRepresentation, "a");
+        if (fp) { fputs([line UTF8String], fp); fputc('\n', fp); fclose(fp); }
+    }
 }
 
 static void savePrefs(void) {
@@ -1904,6 +1921,13 @@ static BOOL detectBoardFlipped(UIView *board) {
 
 #pragma mark - Auto Play (synthetic touches)
 
+static void setMyColor(NSInteger c, NSString *src) {
+    if (gMyColor != c) {
+        dbg([NSString stringWithFormat:@"COLOR %ld -> %ld  (%@)", (long)gMyColor, (long)c, src]);
+    }
+    gMyColor = c;
+}
+
 static int fenSideToMove(NSString *fen) {
     NSArray *parts = [fen componentsSeparatedByString:@" "];
     if (parts.count < 2) return -1;
@@ -2437,6 +2461,8 @@ static void fetchMove(NSString *fen) {
     }
 
     NSInteger depth = eloToDepth(gElo);
+    dbg([NSString stringWithFormat:@"turn: fenSide=%d myColor=%ld autoplay=%d",
+         fenSideToMove(fen), (long)gMyColor, gAutoPlay ? 1 : 0]);
     dbg([NSString stringWithFormat:@"fetch d%ld: %@", (long)depth,
          [fen substringToIndex:MIN(fen.length, 45)]]);
 
@@ -3036,7 +3062,7 @@ static BOOL processBotBoard(UIView *board) {
     NSString *fen = buildBotFEN(board, &userColor);
     if (!fen) return YES;
 
-    gMyColor = userColor;
+    setMyColor(userColor, @"processBotBoard");
     static NSString *sLastBotFen = nil;
     if (![fen isEqualToString:sLastBotFen]) {
         sLastBotFen = [fen copy];
@@ -3168,7 +3194,7 @@ static BOOL drivePuzzle(UIView *board) {
     NSString *pf = buildPuzzleFENFromLabels(board);
     if (!pf.length) return NO;
     parseFEN(pf);
-    gMyColor = gSide;
+    setMyColor(gSide, @"drivePuzzle");
     static NSString *sLastPuzzleFen = nil;
     if (![pf isEqualToString:sLastPuzzleFen]) {
         sLastPuzzleFen = [pf copy];
@@ -3231,15 +3257,15 @@ static void hook_layoutSubviews(id self, SEL _cmd) {
                 dbg([NSString stringWithFormat:@"myPieceColor raw=%ld", (long)raw]);
             }
 
-            if (raw == 1) gMyColor = 0;
-            else if (raw == 2) gMyColor = 1;
+            if (raw == 1) setMyColor(0, [NSString stringWithFormat:@"myPieceColor raw=1 %@", NSStringFromClass([self class])]);
+            else if (raw == 2) setMyColor(1, [NSString stringWithFormat:@"myPieceColor raw=2 %@", NSStringFromClass([self class])]);
             else if (raw == 0) {
 
                 SEL flipSel = NSSelectorFromString(@"isFlipped");
                 if ([self respondsToSelector:flipSel]) {
                     typedef BOOL (*BoolGetter)(id, SEL);
                     BOOL flipped = ((BoolGetter)objc_msgSend)(self, flipSel);
-                    gMyColor = flipped ? 1 : 0;
+                    setMyColor(flipped ? 1 : 0, [NSString stringWithFormat:@"raw=0 isFlipped=%d %@", flipped, NSStringFromClass([self class])]);
                 }
             }
         } else {
@@ -3250,7 +3276,7 @@ static void hook_layoutSubviews(id self, SEL _cmd) {
                 BOOL flipped = ((BoolGetter)objc_msgSend)(self, flipSel2);
                 NSInteger newColor = flipped ? 1 : 0;
                 if (newColor != gMyColor) {
-                    gMyColor = newColor;
+                    setMyColor(newColor, [NSString stringWithFormat:@"isFlipped-only %@", NSStringFromClass([self class])]);
                     dbg([NSString stringWithFormat:@"color via isFlipped: %@",
                          flipped ? @"black" : @"white"]);
                 }
