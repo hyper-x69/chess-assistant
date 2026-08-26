@@ -2461,8 +2461,6 @@ static void fetchMove(NSString *fen) {
     }
 
     NSInteger depth = eloToDepth(gElo);
-    dbg([NSString stringWithFormat:@"turn: fenSide=%d myColor=%ld autoplay=%d",
-         fenSideToMove(fen), (long)gMyColor, gAutoPlay ? 1 : 0]);
     dbg([NSString stringWithFormat:@"fetch d%ld: %@", (long)depth,
          [fen substringToIndex:MIN(fen.length, 45)]]);
 
@@ -2985,8 +2983,11 @@ static NSString *buildBotFEN(UIView *board, int *outUserColor) {
             for (int f = 0; f < 8; f++) rot[r][f] = bd[7 - r][7 - f];
         memcpy(bd, rot, sizeof(bd));
         flipped = !flipped;
-        dbg([NSString stringWithFormat:@"orientation corrected (illegal=%d stat=%d) -> flipped=%d",
-             illegal, statInverted, flipped]);
+        static int sLastCorrected = -1;
+        if (sLastCorrected != (flipped ? 1 : 0)) {
+            sLastCorrected = flipped ? 1 : 0;
+            dbg([NSString stringWithFormat:@"orientation corrected -> flipped=%d", flipped]);
+        }
     }
 
     gForcedFlip = flipped ? 1 : 0;
