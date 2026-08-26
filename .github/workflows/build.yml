@@ -15,9 +15,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Clone Stockfish 16 + fetch net
+      - name: Clone Stockfish 18 + fetch net
         run: |
-          git clone --depth 1 --branch sf_16 https://github.com/official-stockfish/Stockfish.git sf
+          git clone --depth 1 --branch sf_18 https://github.com/official-stockfish/Stockfish.git sf
           cd sf/src && make net && ls -la *.nnue
 
       - name: Cross-compile Stockfish for iOS arm64 -> libstockfish.a
@@ -28,7 +28,7 @@ jobs:
           FLAGS="-arch arm64 -isysroot $SDK -miphoneos-version-min=15.0 \
                  -std=c++17 -O3 -DNDEBUG -fno-exceptions \
                  -DUSE_PTHREADS -DIS_64BIT -DUSE_POPCNT -DUSE_NEON=8 \
-                 -DUSE_INCBIN -I. -w"
+                 -I. -w"
           set -e
           for f in $(find . -name '*.cpp' ! -path './universal/*'); do
             $CXX $FLAGS -c "$f" -o "$f.o"
@@ -45,6 +45,12 @@ jobs:
           unzip -q model.zip -d "layout/Library/Application Support/Chess"
           chmod -R a+rX "layout/Library/Application Support/Chess"
           find "layout/Library/Application Support/Chess" -maxdepth 2 -print
+          # stage flat copies for embedding into the dylib (see Makefile)
+          MP="layout/Library/Application Support/Chess/maia3_5m.mlpackage"
+          cp "$MP/Manifest.json" maia_mfst.json
+          cp "$MP/Data/com.apple.CoreML/model.mlmodel" maia_model.bin
+          cp "$MP/Data/com.apple.CoreML/weights/weight.bin" maia_wghts.bin
+          ls -la maia_mfst.json maia_model.bin maia_wghts.bin
 
       - name: Setup Theos
         uses: beerpiss/theos-action@v1

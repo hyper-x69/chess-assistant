@@ -8,9 +8,12 @@
 #import "engine.h"
 #import "maia.h"
 
+#define CH_ACCENT [UIColor colorWithRed:0.49 green:0.66 blue:0.32 alpha:1.0]
+
 #define PREF_ELO     @"ChessAssist_ELO"
 #define PREF_ENABLED @"ChessAssist_Enabled"
 #define PREF_SHOWN   @"ChessAssist_CreditShown"
+#define PREF_CREDIT2 @"ChessAssist_CreditShown2"
 #define PREF_WINPCT  @"ChessAssist_WinPct"
 #define PREF_ARROWS  @"ChessAssist_ArrowCount"
 #define PREF_ALPHA   @"ChessAssist_ArrowAlpha"
@@ -18,7 +21,14 @@
 #define PREF_EVALCLR @"ChessAssist_ArrowEvalColor"
 #define PREF_QUALITY @"ChessAssist_TrackQuality"
 #define PREF_EVALLBL @"ChessAssist_EvalLabels"
+#define PREF_EVALBAR @"ChessAssist_EvalBar"
 #define PREF_USEMAIA @"ChessAssist_UseMaia"
+#define PREF_AUTOPLAY @"ChessAssist_AutoPlay"
+#define PREF_APDELAY  @"ChessAssist_AutoPlayDelay"
+#define PREF_APJITEN  @"ChessAssist_AutoPlayJitterEnabled"
+#define PREF_APJITRNG @"ChessAssist_AutoPlayJitterRange"
+#define PREF_AP2ND    @"ChessAssist_AutoPlaySecondBest"
+#define PREF_AP2NDPCT @"ChessAssist_AutoPlaySecondBestPct"
 #define DEFAULT_ELO  800
 
 static NSInteger gElo     = DEFAULT_ELO;
@@ -46,6 +56,7 @@ static NSString *gLastQualDone = nil;
 static double    gAccSum = 0;
 static int       gAccCount = 0;
 static NSString *gLastMoveQuality = nil;
+static BOOL      gPuzzleCtx = NO;
 
 enum { Q_BRILLIANT, Q_GREAT, Q_BEST, Q_EXCELLENT, Q_GOOD, Q_INACC, Q_MISS, Q_MISTAKE, Q_BLUNDER, Q_COUNT };
 static int    gQ[Q_COUNT] = {0};
@@ -53,14 +64,25 @@ static double gQual2ndWhite = 0;
 static BOOL   gQualHave2nd = NO;
 static BOOL gShowEvalLabels = YES;
 static BOOL gUseMaia = NO;
+static BOOL gAutoPlay = NO;
+static double gAutoPlayDelay = 0.15;
+static BOOL gAutoPlayJitterEnabled = NO;
+static double gAutoPlayJitterRange = 1.0;
+static BOOL gAutoPlaySecondBest = NO;
+static NSInteger gAutoPlaySecondBestPct = 10;
+static NSString *gLastAutoPlayed = nil;
+static NSMutableString *gUciSeq = nil;
+static NSString *gPgnStartFen = nil;
+static BOOL gShowEvalBar = YES;
+static BOOL gBarHave = NO;
+static double gBarWhiteEval = 0;
+static BOOL gBarIsMate = NO;
+static int gBarMateWhite = 0;
+static BOOL gSkipNextTap = NO;
 
 static NSMutableArray *gLog;
 static void dbg(NSString *msg) {
-    if (!gLog) gLog = [NSMutableArray array];
-    [gLog addObject:[NSString stringWithFormat:@"[%@] %@",
-        [NSDateFormatter localizedStringFromDate:[NSDate date]
-            dateStyle:NSDateFormatterNoStyle timeStyle:NSDateFormatterMediumStyle], msg]];
-    while (gLog.count > 80) [gLog removeObjectAtIndex:0];
+    (void)msg;
 }
 
 static void savePrefs(void) {
@@ -75,6 +97,13 @@ static void savePrefs(void) {
     [d setBool:gTrackQuality forKey:PREF_QUALITY];
     [d setBool:gShowEvalLabels forKey:PREF_EVALLBL];
     [d setBool:gUseMaia forKey:PREF_USEMAIA];
+    [d setBool:gAutoPlay forKey:PREF_AUTOPLAY];
+    [d setDouble:gAutoPlayDelay forKey:PREF_APDELAY];
+    [d setBool:gShowEvalBar forKey:PREF_EVALBAR];
+    [d setBool:gAutoPlayJitterEnabled forKey:PREF_APJITEN];
+    [d setDouble:gAutoPlayJitterRange forKey:PREF_APJITRNG];
+    [d setBool:gAutoPlaySecondBest forKey:PREF_AP2ND];
+    [d setInteger:gAutoPlaySecondBestPct forKey:PREF_AP2NDPCT];
     [d synchronize];
 }
 static void loadPrefs(void) {
@@ -89,6 +118,25 @@ static void loadPrefs(void) {
     if ([d objectForKey:PREF_QUALITY]) gTrackQuality = [d boolForKey:PREF_QUALITY];
     if ([d objectForKey:PREF_EVALLBL]) gShowEvalLabels = [d boolForKey:PREF_EVALLBL];
     if ([d objectForKey:PREF_USEMAIA]) gUseMaia = [d boolForKey:PREF_USEMAIA];
+    if ([d objectForKey:PREF_AUTOPLAY]) gAutoPlay = [d boolForKey:PREF_AUTOPLAY];
+    if ([d objectForKey:PREF_APDELAY]) {
+        gAutoPlayDelay = [d doubleForKey:PREF_APDELAY];
+        if (gAutoPlayDelay < 0) gAutoPlayDelay = 0;
+        if (gAutoPlayDelay > 5.0) gAutoPlayDelay = 5.0;
+    }
+    if ([d objectForKey:PREF_EVALBAR]) gShowEvalBar = [d boolForKey:PREF_EVALBAR];
+    if ([d objectForKey:PREF_APJITEN]) gAutoPlayJitterEnabled = [d boolForKey:PREF_APJITEN];
+    if ([d objectForKey:PREF_APJITRNG]) {
+        gAutoPlayJitterRange = [d doubleForKey:PREF_APJITRNG];
+        if (gAutoPlayJitterRange < 0) gAutoPlayJitterRange = 0;
+        if (gAutoPlayJitterRange > 2.0) gAutoPlayJitterRange = 2.0;
+    }
+    if ([d objectForKey:PREF_AP2ND]) gAutoPlaySecondBest = [d boolForKey:PREF_AP2ND];
+    if ([d objectForKey:PREF_AP2NDPCT]) {
+        gAutoPlaySecondBestPct = [d integerForKey:PREF_AP2NDPCT];
+    }
+    if (gAutoPlaySecondBestPct < 0) gAutoPlaySecondBestPct = 0;
+    if (gAutoPlaySecondBestPct > 50) gAutoPlaySecondBestPct = 50;
     if (gArrowCount < 1) gArrowCount = 1; if (gArrowCount > 3) gArrowCount = 3;
 }
 
@@ -111,6 +159,10 @@ static NSInteger eloToDepth(NSInteger elo) {
 }
 
 static void showQualityToast(NSString *text, UIColor *color);
+static void ensureMaiaLoaded(void);
+static NSString *buildPGN(void);
+static void updateEvalBar(void);
+static void removeEvalBar(void);
 
 static NSString *formatEvalLabel(double evalUs, BOOL isMate, int mateIn) {
     if (isMate) return [NSString stringWithFormat:@"M%d", abs(mateIn)];
@@ -171,17 +223,17 @@ static int fenMaterial(NSString *fen, int color ) {
     return sum;
 }
 
-static int classifyMove(double lossCp, double beforeUs, double afterUs,
-                        BOOL playedBest, BOOL onlyGood, BOOL sacrificed) {
-    if (playedBest && sacrificed && afterUs >= 1.0) return Q_BRILLIANT;
-    if (playedBest && onlyGood)                     return Q_GREAT;
-    if (lossCp <= 10)  return Q_BEST;
-    if (lossCp <= 40)  return Q_EXCELLENT;
-    if (lossCp <= 90)  return Q_GOOD;
-    if (lossCp <= 150) return Q_INACC;
-
-    if (beforeUs >= 2.0 && afterUs >= 0.0) return Q_MISS;
-    if (lossCp <= 300) return Q_MISTAKE;
+// Grade on win-% loss (chess.com-style) instead of raw centipawns — far more
+// stable across shallow searches, so genuinely best moves stop showing as
+// "Inaccuracy" from ±30cp eval noise.
+static int classifyMove(double winLoss, BOOL playedBest, BOOL onlyGood, BOOL sacrificed) {
+    if (playedBest && sacrificed) return Q_BRILLIANT;
+    if (playedBest && onlyGood)   return Q_GREAT;
+    if (winLoss <= 0.5)  return Q_BEST;
+    if (winLoss <= 2.0)  return Q_EXCELLENT;
+    if (winLoss <= 5.0)  return Q_GOOD;
+    if (winLoss <= 10.0) return Q_INACC;
+    if (winLoss <= 20.0) return Q_MISTAKE;
     return Q_BLUNDER;
 }
 
@@ -214,7 +266,7 @@ static void analyzeUserMove(NSString *oppFen) {
     NSString *beforeFen = [gQualFen copy];
     int    userColor   = gMyColor;
     BOOL   stmWhite    = ([oppFen rangeOfString:@" w "].location != NSNotFound);
-    NSInteger depth    = eloToDepth(gElo);
+    NSInteger depth    = MAX(14, eloToDepth(gElo)); // stable evals matter more than speed here
 
     EngineGo([oppFen UTF8String], (int)depth, (int)gElo, 1,
              ^(const EngineLine *lines, int count) {
@@ -227,23 +279,24 @@ static void analyzeUserMove(NSString *oppFen) {
             double beforeUs = (userColor == 1) ? -beforeWhite : beforeWhite;
             double afterUs  = (userColor == 1) ? -afterWhite  : afterWhite;
             double secondUs = (userColor == 1) ? -secondWhite : secondWhite;
-            double lossCp = (beforeUs - afterUs) * 100.0;
-            if (lossCp < 0) lossCp = 0;
 
-            BOOL playedBest = lossCp <= 10;
+            double winBefore = evalToWinPct(beforeUs, NO, 0);
+            double winAfter  = evalToWinPct(afterUs, NO, 0);
+            double winLoss   = winBefore - winAfter;
+            if (winLoss < 0) winLoss = 0;
+
+            BOOL playedBest = winLoss <= 0.5;
             BOOL onlyGood   = have2nd && (beforeUs - secondUs) >= 1.5;
 
             int dBefore = fenMaterial(beforeFen, userColor) - fenMaterial(beforeFen, 1 - userColor);
             int dAfter  = fenMaterial(oppFen,    userColor) - fenMaterial(oppFen,    1 - userColor);
             BOOL sacrificed = (dAfter <= -2) && (dAfter < dBefore);
 
-            int cat = classifyMove(lossCp, beforeUs, afterUs, playedBest, onlyGood, sacrificed);
+            int cat = classifyMove(winLoss, playedBest, onlyGood, sacrificed);
             gQ[cat]++;
-            double acc = moveAccuracy(evalToWinPct(beforeUs, NO, 0), evalToWinPct(afterUs, NO, 0));
+            double acc = moveAccuracy(winBefore, winAfter);
             gAccSum += acc; gAccCount++;
-            gLastMoveQuality = [NSString stringWithFormat:@"%@ (-%.2f)", qName(cat), lossCp / 100.0];
-            dbg([NSString stringWithFormat:@"move: %@ | acc %.0f%% | game %.0f%%",
-                 gLastMoveQuality, acc, gAccCount ? gAccSum / gAccCount : 0]);
+            gLastMoveQuality = [NSString stringWithFormat:@"%@ (-%.1f%%)", qName(cat), winLoss];
             showQualityToast([NSString stringWithFormat:@"%@ %@", qSymbol(cat), qName(cat)], qColor(cat));
         });
     });
@@ -359,6 +412,9 @@ static int tcnIndex(unichar c) {
 
 static NSString *decodeTCNToFEN(NSString *initialFEN, NSString *encoded) {
     parseFEN(initialFEN);
+    gPgnStartFen = [initialFEN copy];
+    if (!gUciSeq) gUciSeq = [NSMutableString string];
+    [gUciSeq setString:@""];
     if (!encoded.length) return generateFEN();
     for (NSUInteger i = 0; i + 1 < encoded.length; i += 2) {
         int fromIdx = tcnIndex([encoded characterAtIndex:i]);
@@ -379,6 +435,10 @@ static NSString *decodeTCNToFEN(NSString *initialFEN, NSString *encoded) {
             to = (from >= 48) ? (56 + toFile) : (0 + toFile);
         }
         applyMove(from, to, promo);
+        char u[6] = { (char)('a' + from % 8), (char)('1' + from / 8),
+                      (char)('a' + to % 8),   (char)('1' + to / 8),
+                      (char)(promo ? tolower((unsigned char)promo) : 0), 0 };
+        [gUciSeq appendFormat:@"%s ", u];
     }
     return generateFEN();
 }
@@ -565,10 +625,12 @@ static void showSettingsMenu(void);
 @interface CHAssistBtnHandler : NSObject
 + (void)floatBtnTapped;
 + (void)handlePan:(UIPanGestureRecognizer *)pan;
++ (void)handleLongPress:(UILongPressGestureRecognizer *)lp;
 @end
 
 @implementation CHAssistBtnHandler
 + (void)floatBtnTapped {
+    if (gSkipNextTap) { gSkipNextTap = NO; return; }
     showSettingsMenu();
 }
 + (void)handlePan:(UIPanGestureRecognizer *)pan {
@@ -577,6 +639,16 @@ static void showSettingsMenu(void);
     CGPoint translation = [pan translationInView:container];
     btn.center = CGPointMake(btn.center.x + translation.x, btn.center.y + translation.y);
     [pan setTranslation:CGPointZero inView:container];
+}
++ (void)handleLongPress:(UILongPressGestureRecognizer *)lp {
+    if (lp.state != UIGestureRecognizerStateBegan) return;
+    gSkipNextTap = YES;
+    gEnabled = !gEnabled;
+    savePrefs();
+    if (!gEnabled) clearArrow();
+    dbg([NSString stringWithFormat:@"quick toggle: %@", gEnabled ? @"ON" : @"OFF"]);
+    showQualityToast(gEnabled ? @"▶ Assistant On" : @"⏸ Assistant Paused",
+                     gEnabled ? CH_ACCENT : [UIColor systemRedColor]);
 }
 @end
 
@@ -628,6 +700,11 @@ static void setupFloatingButton(void) {
 
     UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:[CHAssistBtnHandler class] action:@selector(handlePan:)];
     [gFloatBtn addGestureRecognizer:pan];
+
+    UILongPressGestureRecognizer *lp = [[UILongPressGestureRecognizer alloc]
+        initWithTarget:[CHAssistBtnHandler class] action:@selector(handleLongPress:)];
+    lp.minimumPressDuration = 0.45;
+    [gFloatBtn addGestureRecognizer:lp];
 
     [gBtnWin.rootViewController.view addSubview:gFloatBtn];
     gBtnWin.hidden = NO;
@@ -709,7 +786,7 @@ static void showDebugLog(void) {
 static void showCredits(void) {
     UIAlertController *ac = [UIAlertController
         alertControllerWithTitle:@"Chess Assistant"
-        message:@"Made by @epicccccc\n\nYouTube: @epicccccc\nDiscord: itzzace."
+        message:@"Made by @epicccccc\n\nYouTube: @epicccccc\nDiscord: itzzace.\n\nSF18 + Auto Play by Yousseif\nGitHub: usif-x"
         preferredStyle:UIAlertControllerStyleAlert];
     [ac addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault
         handler:^(UIAlertAction *_) { hideMenu(); }]];
@@ -937,7 +1014,6 @@ static void showSettingsMenu(void) {
 }
 #endif
 
-#define CH_ACCENT [UIColor colorWithRed:0.49 green:0.66 blue:0.32 alpha:1.0]
 
 @interface CHPad : UILabel @end
 @implementation CHPad
@@ -952,8 +1028,62 @@ static void showSettingsMenu(void) {
 
 static const NSInteger kEloLevels[] = {400,600,800,1000,1200,1400,1600,1800,2000,2200,2400,2800,3200,3500};
 static const int kEloCount = 14;
-static NSString *eloTierName(NSInteger e) {
-    if (e < 600)  return @"Novice";        if (e < 800)  return @"Beginner";
+static NSString *ecoName(void) {
+    if (!gUciSeq || !gUciSeq.length) return nil;
+    static NSDictionary<NSString *, NSString *> *sTable = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        sTable = @{
+            @"e2e4 e7e5":                                   @"Open Game",
+            @"e2e4 e7e5 g1f3 b8c6 f1b5":                    @"Ruy Lopez",
+            @"e2e4 e7e5 g1f3 b8c6 f1b5 a7a6":               @"Ruy Lopez, Closed",
+            @"e2e4 e7e5 g1f3 b8c6 f1b5 g8f6":               @"Ruy Lopez, Berlin",
+            @"e2e4 e7e5 g1f3 b8c6 f1c4":                    @"Italian Game",
+            @"e2e4 e7e5 g1f3 b8c6 d2d4":                    @"Scotch Game",
+            @"e2e4 e7e5 g1f3 g8f6":                         @"Petrov Defense",
+            @"e2e4 e7e5 g1f3 f8c5":                         @"Giuoco Piano",
+            @"e2e4 e7e5 b1c3":                              @"Vienna Game",
+            @"e2e4 e7e5 f2f4":                              @"King's Gambit",
+            @"e2e4 c7c5":                                   @"Sicilian Defense",
+            @"e2e4 c7c5 c2c3":                              @"Sicilian, Alapin",
+            @"e2e4 c7c5 b1c3":                              @"Sicilian, Closed",
+            @"e2e4 c7c5 g2g3":                              @"Sicilian, Fianchetto",
+            @"e2e4 c7c5 g1f3 b8c6":                         @"Sicilian, Old",
+            @"e2e4 c7c5 g1f3 d7d6":                         @"Sicilian, Open",
+            @"e2e4 c7c5 g1f3 e7e6":                         @"Sicilian, French",
+            @"e2e4 c7c5 g1f3 d7d6 d2d4 c5d4 g1d4 g8f6 b1c3 a7a6": @"Sicilian, Najdorf",
+            @"e2e4 e7e6":                                   @"French Defense",
+            @"e2e4 c7c6":                                   @"Caro-Kann Defense",
+            @"e2e4 d7d6":                                   @"Pirc Defense",
+            @"e2e4 d7d5":                                   @"Scandinavian Defense",
+            @"e2e4 g8f6":                                   @"Alekhine Defense",
+            @"d2d4 d7d5":                                   @"Closed Game",
+            @"d2d4 d7d5 c2c4":                              @"Queen's Gambit",
+            @"d2d4 d7d5 c2c4 e7e6":                         @"Queen's Gambit Declined",
+            @"d2d4 d7d5 c2c4 c7c6":                         @"Slav Defense",
+            @"d2d4 d7d5 c2c4 d5c4":                         @"Queen's Gambit Accepted",
+            @"d2d4 g8f6":                                   @"Indian Defense",
+            @"d2d4 g8f6 c2c4 e7e6":                         @"Indian, Queen's",
+            @"d2d4 g8f6 c2c4 g7g6":                         @"King's Indian / Grünfeld",
+            @"d2d4 g8f6 g1f3 g7g6":                         @"King's Indian Attack",
+            @"d2d4 f7f5":                                   @"Dutch Defense",
+            @"c2c4":                                        @"English Opening",
+            @"c2c4 e7e5":                                   @"English, Reversed Sicilian",
+            @"c2c4 g8f6":                                   @"English, Anglo-Indian",
+            @"g1f3 d7d5 c2c4":                              @"Réti Opening",
+            @"f2f4":                                        @"Bird's Opening",
+        };
+    });
+    NSString *seq = [gUciSeq stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+    __block NSString *best = nil;
+    __block NSUInteger bestLen = 0;
+    [sTable enumerateKeysAndObjectsUsingBlock:^(NSString *k, NSString *v, BOOL *stop) {
+        if ([seq hasPrefix:k] && k.length > bestLen) { best = v; bestLen = k.length; }
+    }];
+    return best;
+}
+
+static NSString *eloTierName(NSInteger e) {    if (e < 600)  return @"Novice";        if (e < 800)  return @"Beginner";
     if (e < 1000) return @"Casual";        if (e < 1200) return @"Improving";
     if (e < 1400) return @"Intermediate";  if (e < 1600) return @"Club";
     if (e < 1800) return @"Strong Club";   if (e < 2000) return @"Expert";
@@ -961,17 +1091,41 @@ static NSString *eloTierName(NSInteger e) {
     if (e < 2800) return @"IM / GM";       if (e < 3200) return @"Super-GM";
     if (e < 3500) return @"Engine";        return @"Maximum";
 }
-static int eloNearestIndex(NSInteger e) {
+// Maia human-like range — the model is trained on games between ~800 and 2000 ELO
+static const NSInteger kMaiaLevels[] = {900,1000,1100,1200,1300,1400,1500,1600,1700,1800,1900,2000};
+static const int kMaiaLevelCount = 12;
+
+static const NSInteger *activeEloLevels(int *outCount) {
+    if (gUseMaia) { *outCount = kMaiaLevelCount; return kMaiaLevels; }
+    *outCount = kEloCount; return kEloLevels;
+}
+static int activeEloNearestIndex(NSInteger e) {
+    int c = 0; const NSInteger *l = activeEloLevels(&c);
     int best = 0; long bd = LONG_MAX;
-    for (int i = 0; i < kEloCount; i++) { long d = labs((long)(kEloLevels[i] - e)); if (d < bd) { bd = d; best = i; } }
+    for (int i = 0; i < c; i++) { long d = labs((long)(l[i] - e)); if (d < bd) { bd = d; best = i; } }
     return best;
+}
+static NSInteger activeEloForIndex(int i) {
+    int c = 0; const NSInteger *l = activeEloLevels(&c);
+    if (i < 0) i = 0; if (i >= c) i = c - 1;
+    return l[i];
+}
+static void clampGeloToActiveRange(void) {
+    int c = 0; const NSInteger *l = activeEloLevels(&c);
+    if (gElo < l[0]) gElo = l[0];
+    if (gElo > l[c-1]) gElo = l[c-1];
 }
 
 @interface CHSettingsPanel : UIView {
     UIView      *_card;
     UIStackView *_stack;
+    UIScrollView *_scroll;
     UILabel     *_eloValue;
     UILabel     *_eloTier;
+    UILabel     *_apDelayValue;
+    UILabel     *_apJitterValue;
+    UILabel     *_apSecondPctValue;
+    UILabel     *_opValue;
 }
 @end
 
@@ -1009,7 +1163,9 @@ static int eloNearestIndex(NSInteger e) {
 - (UILabel *)lbl:(NSString *)t size:(CGFloat)s weight:(UIFontWeight)w color:(UIColor *)c {
     UILabel *l = [[UILabel alloc] init];
     l.text = t; l.textColor = c; l.font = [UIFont systemFontOfSize:s weight:w];
-    l.numberOfLines = 0;
+    l.numberOfLines = 1;
+    NSLayoutConstraint *h = [l.heightAnchor constraintGreaterThanOrEqualToConstant:ceil(s * 1.35)];
+    h.priority = 999; h.active = YES;
     return l;
 }
 
@@ -1018,6 +1174,36 @@ static int eloNearestIndex(NSInteger e) {
     s.backgroundColor = [UIColor colorWithWhite:1 alpha:0.08];
     [s.heightAnchor constraintEqualToConstant:1].active = YES;
     return s;
+}
+
+- (UIView *)sliderRow:(UISlider *)s {
+    s.translatesAutoresizingMaskIntoConstraints = NO;
+    NSLayoutConstraint *h = [s.heightAnchor constraintEqualToConstant:32];
+    h.priority = 999; h.active = YES;
+    UIView *box = [[UIView alloc] init];
+    [box addSubview:s];
+    [NSLayoutConstraint activateConstraints:@[
+        [s.topAnchor constraintEqualToAnchor:box.topAnchor constant:2],
+        [s.bottomAnchor constraintEqualToAnchor:box.bottomAnchor constant:-2],
+        [s.leadingAnchor constraintEqualToAnchor:box.leadingAnchor],
+        [s.trailingAnchor constraintEqualToAnchor:box.trailingAnchor]]];
+    return box;
+}
+
+- (UILabel *)sectionLabel:(NSString *)t {
+    UILabel *l = [[UILabel alloc] init];
+    l.text = t.uppercaseString;
+    l.font = [UIFont systemFontOfSize:11 weight:UIFontWeightSemibold];
+    l.textColor = [UIColor colorWithWhite:1 alpha:0.45];
+    NSMutableAttributedString *attr = [[NSMutableAttributedString alloc] initWithString:l.text attributes:@{
+        NSFontAttributeName: l.font,
+        NSForegroundColorAttributeName: l.textColor,
+        NSKernAttributeName: @1.2
+    }];
+    l.attributedText = attr;
+    NSLayoutConstraint *h = [l.heightAnchor constraintGreaterThanOrEqualToConstant:16];
+    h.priority = 999; h.active = YES;
+    return l;
 }
 
 - (UIView *)group:(UIView *)inner {
@@ -1035,15 +1221,24 @@ static int eloNearestIndex(NSInteger e) {
 }
 
 - (UIView *)rowTitle:(NSString *)t control:(UIView *)ctrl {
-    ctrl.translatesAutoresizingMaskIntoConstraints = NO;
     UILabel *l = [self lbl:t size:15 weight:UIFontWeightMedium color:UIColor.whiteColor];
-    UIStackView *h = [[UIStackView alloc] initWithArrangedSubviews:@[l, ctrl]];
+    NSMutableArray *arr = [NSMutableArray array];
+    if (ctrl) {
+        ctrl.translatesAutoresizingMaskIntoConstraints = NO;
+        [arr addObject:l];
+        [arr addObject:ctrl];
+    } else {
+        [arr addObject:l];
+    }
+    UIStackView *h = [[UIStackView alloc] initWithArrangedSubviews:arr];
     h.axis = UILayoutConstraintAxisHorizontal; h.alignment = UIStackViewAlignmentCenter;
     h.distribution = UIStackViewDistributionFill;
     [l setContentHuggingPriority:250 forAxis:UILayoutConstraintAxisHorizontal];
-    [ctrl setContentHuggingPriority:1000 forAxis:UILayoutConstraintAxisHorizontal];
-    [ctrl setContentCompressionResistancePriority:1000 forAxis:UILayoutConstraintAxisHorizontal];
-    if ([ctrl isKindOfClass:[UISlider class]]) [ctrl.widthAnchor constraintEqualToConstant:150].active = YES;
+    if (ctrl) {
+        [ctrl setContentHuggingPriority:1000 forAxis:UILayoutConstraintAxisHorizontal];
+        [ctrl setContentCompressionResistancePriority:1000 forAxis:UILayoutConstraintAxisHorizontal];
+        if ([ctrl isKindOfClass:[UISlider class]]) [ctrl.widthAnchor constraintEqualToConstant:150].active = YES;
+    }
     return h;
 }
 
@@ -1169,10 +1364,11 @@ static int eloNearestIndex(NSInteger e) {
     [card.contentView addSubview:scroll];
 
     UIStackView *stack = [[UIStackView alloc] init];
-    stack.axis = UILayoutConstraintAxisVertical; stack.spacing = 12;
+    stack.axis = UILayoutConstraintAxisVertical; stack.spacing = 14;
     stack.translatesAutoresizingMaskIntoConstraints = NO;
     [scroll addSubview:stack];
     _stack = stack;
+    _scroll = scroll;
 
     CGFloat bottomPad = 16;
     if (@available(iOS 11, *)) bottomPad += self.safeAreaInsets.bottom;
@@ -1207,93 +1403,205 @@ static int eloNearestIndex(NSInteger e) {
 }
 
 - (void)populate {
-    for (UIView *v in [_stack.arrangedSubviews copy]) { [_stack removeArrangedSubview:v]; [v removeFromSuperview]; }
+    @try {
+        for (UIView *v in [_stack.arrangedSubviews copy]) { [_stack removeArrangedSubview:v]; [v removeFromSuperview]; }
 
-    UIButton *x = [UIButton buttonWithType:UIButtonTypeSystem];
-    [x setTitle:@"✕" forState:UIControlStateNormal];
-    x.titleLabel.font = [UIFont systemFontOfSize:20];
-    [x setTitleColor:[UIColor colorWithWhite:0.7 alpha:1] forState:UIControlStateNormal];
-    [x addTarget:self action:@selector(closeTap) forControlEvents:UIControlEventTouchUpInside];
-    [x setContentHuggingPriority:1000 forAxis:UILayoutConstraintAxisHorizontal];
-    UIStackView *hdr = [[UIStackView alloc] initWithArrangedSubviews:@[
-        [self lbl:@"Chess Assistant" size:22 weight:UIFontWeightBold color:UIColor.whiteColor], x]];
-    hdr.axis = UILayoutConstraintAxisHorizontal; hdr.alignment = UIStackViewAlignmentCenter;
-    [_stack addArrangedSubview:hdr];
+        UIButton *x = [UIButton buttonWithType:UIButtonTypeSystem];
+        [x setTitle:@"✕" forState:UIControlStateNormal];
+        x.titleLabel.font = [UIFont systemFontOfSize:20];
+        [x setTitleColor:[UIColor colorWithWhite:0.7 alpha:1] forState:UIControlStateNormal];
+        [x addTarget:self action:@selector(closeTap) forControlEvents:UIControlEventTouchUpInside];
+        [x setContentHuggingPriority:1000 forAxis:UILayoutConstraintAxisHorizontal];
+        UIStackView *hdr = [[UIStackView alloc] initWithArrangedSubviews:@[
+            [self lbl:@"Chess Assistant" size:22 weight:UIFontWeightBold color:UIColor.whiteColor], x]];
+        hdr.axis = UILayoutConstraintAxisHorizontal; hdr.alignment = UIStackViewAlignmentCenter;
+        [_stack addArrangedSubview:hdr];
 
-    NSString *sub = [NSString stringWithFormat:@"%@ · Depth %ld · Playing %@",
-        gEnabled ? @"Active" : @"Paused", (long)eloToDepth(gElo),
-        gMyColor == 0 ? @"White" : (gMyColor == 1 ? @"Black" : @"—")];
-    [_stack addArrangedSubview:[self lbl:sub size:12 weight:UIFontWeightRegular color:[UIColor colorWithWhite:0.6 alpha:1]]];
+        NSString *sub = [NSString stringWithFormat:@"%@ · Depth %ld · %@ · Playing %@",
+            gEnabled ? @"Active" : @"Paused",
+            (long)eloToDepth(gElo),
+            gUseMaia ? @"Maia" : @"Stockfish",
+            gMyColor == 0 ? @"White" : (gMyColor == 1 ? @"Black" : @"—")];
+        UILabel *subLbl = [self lbl:sub size:13 weight:UIFontWeightSemibold color:[UIColor colorWithWhite:0.75 alpha:1]];
+        [_stack addArrangedSubview:subLbl];
+        [_stack setCustomSpacing:12 afterView:hdr];
 
-    [_stack addArrangedSubview:[self statsCard]];
+        NSString *eco = ecoName();
+        if (eco.length) {
+            UILabel *ecoLbl = [self lbl:[NSString stringWithFormat:@"📖 %@", eco]
+                                   size:12 weight:UIFontWeightSemibold
+                                  color:[UIColor colorWithRed:0.55 green:0.75 blue:0.95 alpha:1]];
+            [_stack addArrangedSubview:ecoLbl];
+            [_stack setCustomSpacing:10 afterView:subLbl];
+        }
 
-    _eloValue = [self lbl:[NSString stringWithFormat:@"%ld", (long)gElo] size:16 weight:UIFontWeightSemibold color:CH_ACCENT];
-    _eloTier  = [self lbl:eloTierName(gElo) size:12 weight:UIFontWeightRegular color:[UIColor colorWithWhite:0.6 alpha:1]];
-    [_eloValue setContentHuggingPriority:1000 forAxis:UILayoutConstraintAxisHorizontal];
-    UISlider *elo = [[UISlider alloc] init];
-    elo.minimumValue = 0; elo.maximumValue = kEloCount - 1; elo.value = eloNearestIndex(gElo);
-    elo.minimumTrackTintColor = CH_ACCENT;
-    [elo addTarget:self action:@selector(eloSlide:) forControlEvents:UIControlEventValueChanged];
-    [elo addTarget:self action:@selector(eloDone:) forControlEvents:UIControlEventTouchUpInside | UIControlEventTouchUpOutside];
-    UIStackView *eloHdr = [[UIStackView alloc] initWithArrangedSubviews:@[
-        [self lbl:@"Strength (ELO)" size:15 weight:UIFontWeightMedium color:UIColor.whiteColor], _eloValue]];
-    eloHdr.axis = UILayoutConstraintAxisHorizontal; eloHdr.distribution = UIStackViewDistributionFill;
-    UIStackView *eloCol = [[UIStackView alloc] initWithArrangedSubviews:@[eloHdr, elo, _eloTier]];
-    eloCol.axis = UILayoutConstraintAxisVertical; eloCol.spacing = 4;
-    [_stack addArrangedSubview:[self group:eloCol]];
+        UIView *stats = [self statsCard];
+        [_stack addArrangedSubview:stats];
 
-    UISegmentedControl *evalSeg = [[UISegmentedControl alloc] initWithItems:@[@"Centipawn", @"Win %"]];
-    evalSeg.selectedSegmentIndex = gShowWinPct ? 1 : 0; [self styleSeg:evalSeg];
-    [evalSeg addTarget:self action:@selector(evalSeg:) forControlEvents:UIControlEventValueChanged];
-    UISegmentedControl *arrSeg = [[UISegmentedControl alloc] initWithItems:@[@"1", @"2", @"3"]];
-    arrSeg.selectedSegmentIndex = MIN(2, MAX(0, (int)gArrowCount - 1)); [self styleSeg:arrSeg];
-    [arrSeg addTarget:self action:@selector(arrSeg:) forControlEvents:UIControlEventValueChanged];
-    UISegmentedControl *thickSeg = [[UISegmentedControl alloc] initWithItems:@[@"Thin", @"Med", @"Thick"]];
-    thickSeg.selectedSegmentIndex = gArrowThick < 0.85 ? 0 : (gArrowThick > 1.2 ? 2 : 1); [self styleSeg:thickSeg];
-    [thickSeg addTarget:self action:@selector(thickSeg:) forControlEvents:UIControlEventValueChanged];
-    UISlider *op = [[UISlider alloc] init];
-    op.minimumValue = 0.3; op.maximumValue = 1.0; op.value = gArrowAlpha; op.minimumTrackTintColor = CH_ACCENT;
-    [op addTarget:self action:@selector(opSlide:) forControlEvents:UIControlEventValueChanged];
-    UIStackView *grp = [[UIStackView alloc] initWithArrangedSubviews:@[
-        [self rowTitle:@"Evaluation" control:evalSeg], [self sep],
-        [self rowTitle:@"Arrows" control:arrSeg], [self sep],
-        [self rowTitle:@"Thickness" control:thickSeg], [self sep],
-        [self rowTitle:@"Opacity" control:op]]];
-    grp.axis = UILayoutConstraintAxisVertical; grp.spacing = 10;
-    [_stack addArrangedSubview:[self group:grp]];
+        // ---- ENGINE ----
+        [_stack addArrangedSubview:[self sectionLabel:@"Engine"]];
+        int eloCnt = 0; const NSInteger *eloLvls = activeEloLevels(&eloCnt);
 
-    NSMutableArray *swRows = [NSMutableArray array];
-    [swRows addObject:[self rowTitle:@"Maia (human-like)" control:[self switchOn:gUseMaia sel:@selector(swMaia:)]]];
-    [swRows addObject:[self sep]];
-    [swRows addObject:[self rowTitle:@"Move Analysis" control:[self switchOn:gTrackQuality sel:@selector(swAnalysis:)]]];
-    [swRows addObject:[self sep]];
-    [swRows addObject:[self rowTitle:@"Eval Labels" control:[self switchOn:gShowEvalLabels sel:@selector(swLabels:)]]];
-    [swRows addObject:[self sep]];
-    [swRows addObject:[self rowTitle:@"Color by Eval" control:[self switchOn:gArrowEvalColor sel:@selector(swColor:)]]];
-    UIStackView *sw = [[UIStackView alloc] initWithArrangedSubviews:swRows];
-    sw.axis = UILayoutConstraintAxisVertical; sw.spacing = 10;
-    [_stack addArrangedSubview:[self group:sw]];
+        UISegmentedControl *engSeg = [[UISegmentedControl alloc] initWithItems:@[@"SF18", @"MAIA"]];
+        engSeg.selectedSegmentIndex = gUseMaia ? 1 : 0;
+        [self styleSeg:engSeg];
+        [engSeg addTarget:self action:@selector(engSeg:) forControlEvents:UIControlEventValueChanged];
 
-    [_stack addArrangedSubview:[self bigBtn:(gEnabled ? @"Pause Assistant" : @"Enable Assistant")
-                                      color:(gEnabled ? [UIColor systemRedColor] : CH_ACCENT)
-                                        sel:@selector(enableTap)]];
-    UIStackView *foot = [[UIStackView alloc] initWithArrangedSubviews:@[
-        [self smallBtn:@"Debug Log" sel:@selector(debugTap)],
-        [self smallBtn:@"Credits" sel:@selector(creditsTap)]]];
-    foot.axis = UILayoutConstraintAxisHorizontal; foot.distribution = UIStackViewDistributionFillEqually; foot.spacing = 10;
-    [_stack addArrangedSubview:foot];
+        _eloValue = [self lbl:[NSString stringWithFormat:@"%ld", (long)gElo] size:16 weight:UIFontWeightSemibold color:CH_ACCENT];
+        NSString *tierText = gUseMaia
+            ? [NSString stringWithFormat:@"%@ · tuned for Maia (%ld–%ld)", eloTierName(gElo), (long)eloLvls[0], (long)eloLvls[eloCnt-1]]
+            : eloTierName(gElo);
+        _eloTier  = [self lbl:tierText size:12 weight:UIFontWeightRegular color:[UIColor colorWithWhite:0.6 alpha:1]];
+        [_eloValue setContentHuggingPriority:1000 forAxis:UILayoutConstraintAxisHorizontal];
+        UISlider *elo = [[UISlider alloc] init];
+        elo.minimumValue = 0; elo.maximumValue = eloCnt - 1; elo.value = activeEloNearestIndex(gElo);
+        elo.minimumTrackTintColor = CH_ACCENT;
+        [elo addTarget:self action:@selector(eloSlide:) forControlEvents:UIControlEventValueChanged];
+        [elo addTarget:self action:@selector(eloDone:) forControlEvents:UIControlEventTouchUpInside | UIControlEventTouchUpOutside];
+        NSString *strengthTitle = gUseMaia ? @"Strength (Human-like)" : @"Strength (ELO)";
+        UIStackView *eloHdr = [[UIStackView alloc] initWithArrangedSubviews:@[
+            [self lbl:strengthTitle size:15 weight:UIFontWeightMedium color:UIColor.whiteColor], _eloValue]];
+        eloHdr.axis = UILayoutConstraintAxisHorizontal; eloHdr.distribution = UIStackViewDistributionFill;
+        UIStackView *eloCol = [[UIStackView alloc] initWithArrangedSubviews:@[
+            [self rowTitle:@"Engine" control:engSeg], [self sep],
+            eloHdr, [self sliderRow:elo], _eloTier]];
+        eloCol.axis = UILayoutConstraintAxisVertical; eloCol.spacing = 8;
+        [_stack addArrangedSubview:[self group:eloCol]];
+
+        // ---- DISPLAY ----
+        [_stack addArrangedSubview:[self sectionLabel:@"Display"]];
+
+        UISegmentedControl *evalSeg = [[UISegmentedControl alloc] initWithItems:@[@"Centipawn", @"Win %"]];
+        evalSeg.selectedSegmentIndex = gShowWinPct ? 1 : 0; [self styleSeg:evalSeg];
+        [evalSeg addTarget:self action:@selector(evalSeg:) forControlEvents:UIControlEventValueChanged];
+        UISegmentedControl *arrSeg = [[UISegmentedControl alloc] initWithItems:@[@"1", @"2", @"3"]];
+        arrSeg.selectedSegmentIndex = MIN(2, MAX(0, (int)gArrowCount - 1)); [self styleSeg:arrSeg];
+        [arrSeg addTarget:self action:@selector(arrSeg:) forControlEvents:UIControlEventValueChanged];
+        UISegmentedControl *thickSeg = [[UISegmentedControl alloc] initWithItems:@[@"Thin", @"Med", @"Thick"]];
+        thickSeg.selectedSegmentIndex = gArrowThick < 0.85 ? 0 : (gArrowThick > 1.2 ? 2 : 1); [self styleSeg:thickSeg];
+        [thickSeg addTarget:self action:@selector(thickSeg:) forControlEvents:UIControlEventValueChanged];
+
+        _opValue = [self lbl:[NSString stringWithFormat:@"%d%%", (int)round(gArrowAlpha * 100)]
+                         size:15 weight:UIFontWeightSemibold color:CH_ACCENT];
+        [_opValue setContentHuggingPriority:1000 forAxis:UILayoutConstraintAxisHorizontal];
+        UISlider *op = [[UISlider alloc] init];
+        op.minimumValue = 0.3; op.maximumValue = 1.0; op.value = gArrowAlpha; op.minimumTrackTintColor = CH_ACCENT;
+        [op addTarget:self action:@selector(opSlide:) forControlEvents:UIControlEventValueChanged];
+
+        UIStackView *grp = [[UIStackView alloc] initWithArrangedSubviews:@[
+            [self rowTitle:@"Evaluation" control:evalSeg], [self sep],
+            [self rowTitle:@"Arrows" control:arrSeg], [self sep],
+            [self rowTitle:@"Thickness" control:thickSeg], [self sep],
+            [self rowTitle:@"Eval Bar" control:[self switchOn:gShowEvalBar sel:@selector(swEvalBar:)]], [self sep],
+            [self rowTitle:@"Opacity" control:_opValue],
+            [self sliderRow:op]]];
+        grp.axis = UILayoutConstraintAxisVertical; grp.spacing = 12;
+        [_stack addArrangedSubview:[self group:grp]];
+
+        // ---- FEATURES ----
+        [_stack addArrangedSubview:[self sectionLabel:@"Features"]];
+
+        NSMutableArray *swRows = [NSMutableArray array];
+        [swRows addObject:[self rowTitle:@"Move Analysis" control:[self switchOn:gTrackQuality sel:@selector(swAnalysis:)]]];
+        [swRows addObject:[self sep]];
+        [swRows addObject:[self rowTitle:@"Eval Labels" control:[self switchOn:gShowEvalLabels sel:@selector(swLabels:)]]];
+        [swRows addObject:[self sep]];
+        [swRows addObject:[self rowTitle:@"Color by Eval" control:[self switchOn:gArrowEvalColor sel:@selector(swColor:)]]];
+        UIStackView *sw = [[UIStackView alloc] initWithArrangedSubviews:swRows];
+        sw.axis = UILayoutConstraintAxisVertical; sw.spacing = 14;
+        [_stack addArrangedSubview:[self group:sw]];
+
+        // ---- AUTO PLAY ----
+        [_stack addArrangedSubview:[self sectionLabel:@"Auto Play"]];
+
+        _apDelayValue = [self lbl:[NSString stringWithFormat:@"%.1fs", gAutoPlayDelay]
+                             size:15 weight:UIFontWeightSemibold color:CH_ACCENT];
+        [_apDelayValue setContentHuggingPriority:1000 forAxis:UILayoutConstraintAxisHorizontal];
+        UISlider *apDelay = [[UISlider alloc] init];
+        apDelay.minimumValue = 0.0; apDelay.maximumValue = 5.0;
+        apDelay.value = gAutoPlayDelay; apDelay.minimumTrackTintColor = CH_ACCENT;
+        [apDelay addTarget:self action:@selector(apDelaySlide:) forControlEvents:UIControlEventValueChanged];
+        [apDelay addTarget:self action:@selector(apDelayDone:) forControlEvents:UIControlEventTouchUpInside | UIControlEventTouchUpOutside];
+
+        _apJitterValue = [self lbl:[NSString stringWithFormat:@"±%.1fs", gAutoPlayJitterRange]
+                              size:15 weight:UIFontWeightSemibold color:CH_ACCENT];
+        [_apJitterValue setContentHuggingPriority:1000 forAxis:UILayoutConstraintAxisHorizontal];
+        UISlider *apJitter = [[UISlider alloc] init];
+        apJitter.minimumValue = 0.0; apJitter.maximumValue = 2.0;
+        apJitter.value = gAutoPlayJitterRange; apJitter.minimumTrackTintColor = CH_ACCENT;
+        [apJitter addTarget:self action:@selector(apJitterSlide:) forControlEvents:UIControlEventValueChanged];
+        [apJitter addTarget:self action:@selector(apJitterDone:) forControlEvents:UIControlEventTouchUpInside | UIControlEventTouchUpOutside];
+
+        _apSecondPctValue = [self lbl:[NSString stringWithFormat:@"%ld%%", (long)gAutoPlaySecondBestPct]
+                     size:15 weight:UIFontWeightSemibold color:CH_ACCENT];
+        [_apSecondPctValue setContentHuggingPriority:1000 forAxis:UILayoutConstraintAxisHorizontal];
+        UISlider *apSecondPct = [[UISlider alloc] init];
+        apSecondPct.minimumValue = 0.0; apSecondPct.maximumValue = 50.0;
+        apSecondPct.value = gAutoPlaySecondBestPct; apSecondPct.minimumTrackTintColor = CH_ACCENT;
+        [apSecondPct addTarget:self action:@selector(apSecondPctSlide:) forControlEvents:UIControlEventValueChanged];
+        [apSecondPct addTarget:self action:@selector(apSecondPctDone:) forControlEvents:UIControlEventTouchUpInside | UIControlEventTouchUpOutside];
+
+        UIStackView *apCol = [[UIStackView alloc] initWithArrangedSubviews:@[
+            [self rowTitle:@"Auto Play" control:[self switchOn:gAutoPlay sel:@selector(swAutoPlay:)]],
+            [self sep],
+            [self rowTitle:@"Move Delay" control:_apDelayValue],
+            [self sliderRow:apDelay],
+            [self sep],
+            [self rowTitle:@"Jitter" control:[self switchOn:gAutoPlayJitterEnabled sel:@selector(swAutoJitter:)]],
+            [self rowTitle:@"Jitter Range" control:_apJitterValue],
+            [self sliderRow:apJitter],
+            [self sep],
+            [self rowTitle:@"2nd Move Chance" control:[self switchOn:gAutoPlaySecondBest sel:@selector(swAutoSecondBest:)]],
+            [self rowTitle:@"2nd Move %" control:_apSecondPctValue],
+            [self sliderRow:apSecondPct],
+            [self lbl:@"Wait after opponent's move before auto playing." size:11 weight:UIFontWeightRegular color:[UIColor colorWithWhite:0.5 alpha:1]]]];
+        apCol.axis = UILayoutConstraintAxisVertical; apCol.spacing = 12;
+        [_stack addArrangedSubview:[self group:apCol]];
+
+        // ---- CONTROLS ----
+        [_stack addArrangedSubview:[self sectionLabel:@"Controls"]];
+
+        [_stack addArrangedSubview:[self bigBtn:(gEnabled ? @"Pause Assistant" : @"Enable Assistant")
+                                          color:(gEnabled ? [UIColor systemRedColor] : CH_ACCENT)
+                                            sel:@selector(enableTap)]];
+        UIButton *prefBtn = [self smallBtn:@"⚡ Preferred Settings (Ban-Safe)" sel:@selector(preferredTap)];
+        prefBtn.backgroundColor = [CH_ACCENT colorWithAlphaComponent:0.25];
+        [_stack addArrangedSubview:prefBtn];
+        UIStackView *copyRow = [[UIStackView alloc] initWithArrangedSubviews:@[
+            [self smallBtn:@"📋 Copy FEN" sel:@selector(copyFenTap)],
+            [self smallBtn:@"📜 Copy PGN" sel:@selector(pgnTap)]]];
+        copyRow.axis = UILayoutConstraintAxisHorizontal; copyRow.distribution = UIStackViewDistributionFillEqually; copyRow.spacing = 10;
+        [_stack addArrangedSubview:copyRow];
+        UIStackView *foot = [[UIStackView alloc] initWithArrangedSubviews:@[
+            [self smallBtn:@"Debug Log" sel:@selector(debugTap)],
+            [self smallBtn:@"Credits" sel:@selector(creditsTap)]]];
+        foot.axis = UILayoutConstraintAxisHorizontal; foot.distribution = UIStackViewDistributionFillEqually; foot.spacing = 10;
+        [_stack addArrangedSubview:foot];
+
+        [_scroll setContentOffset:CGPointZero];
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            NSMutableString *dump = [NSMutableString string];
+            for (UIView *v in _stack.arrangedSubviews) {
+                [dump appendFormat:@"[%@ %@] ", NSStringFromClass([v class]), NSStringFromCGRect(v.frame)];
+            }
+            dbg([NSString stringWithFormat:@"PANEL LAYOUT scroll=%@ stack=%@\n%@", NSStringFromCGRect(_scroll.frame), NSStringFromCGRect(_stack.frame), dump]);
+        });
+    } @catch (NSException *e) {
+        dbg([NSString stringWithFormat:@"PANEL ERR: %@ — %@", e.name, e.reason]);
+    }
 }
 
 - (void)eloSlide:(UISlider *)s {
     int i = (int)roundf(s.value); s.value = i;
-    _eloValue.text = [NSString stringWithFormat:@"%ld%@", (long)kEloLevels[i], kEloLevels[i] > 1500 ? @" ⚠️" : @""];
-    _eloTier.text = eloTierName(kEloLevels[i]);
+    NSInteger e = activeEloForIndex(i);
+    _eloValue.text = [NSString stringWithFormat:@"%ld%@", (long)e, (!gUseMaia && e > 1500) ? @" ⚠️" : @""];
+    _eloTier.text = eloTierName(e);
 }
 - (void)eloDone:(UISlider *)s {
-    int i = (int)roundf(s.value);
-    gElo = kEloLevels[i]; savePrefs(); gLastFen = nil;
-    dbg([NSString stringWithFormat:@"ELO set to %ld", (long)gElo]);
-    if (gElo > 1500) {
+    gElo = activeEloForIndex((int)roundf(s.value));
+    savePrefs(); gLastFen = nil;
+    dbg([NSString stringWithFormat:@"ELO set to %ld (%@)", (long)gElo, gUseMaia ? @"maia" : @"stockfish"]);
+    if (!gUseMaia && gElo > 1500) {
         UIAlertController *w = [UIAlertController alertControllerWithTitle:@"⚠️ Ban Risk"
             message:@"Playing above ~1500 strength is much easier for Chess.com's fair-play system to detect and greatly increases your ban risk. Lower ELO is safer."
             preferredStyle:UIAlertControllerStyleAlert];
@@ -1307,11 +1615,112 @@ static int eloNearestIndex(NSInteger e) {
     gArrowThick = s.selectedSegmentIndex == 0 ? 0.7 : (s.selectedSegmentIndex == 2 ? 1.4 : 1.0);
     savePrefs(); redrawArrows();
 }
-- (void)opSlide:(UISlider *)s { gArrowAlpha = s.value; savePrefs(); redrawArrows(); }
+- (void)swEvalBar:(UISwitch *)s {
+    gShowEvalBar = s.on; savePrefs();
+    if (!gShowEvalBar) removeEvalBar(); else updateEvalBar();
+    dbg([NSString stringWithFormat:@"eval bar: %@", gShowEvalBar ? @"ON" : @"OFF"]);
+}
+- (void)opSlide:(UISlider *)s {
+    gArrowAlpha = s.value; savePrefs(); redrawArrows();
+    _opValue.text = [NSString stringWithFormat:@"%d%%", (int)round(s.value * 100)];
+}
 - (void)swAnalysis:(UISwitch *)s { gTrackQuality = s.on; savePrefs(); if (!s.on) resetAccuracy(); [self populate]; }
 - (void)swLabels:(UISwitch *)s { gShowEvalLabels = s.on; savePrefs(); redrawArrows(); }
 - (void)swColor:(UISwitch *)s { gArrowEvalColor = s.on; savePrefs(); redrawArrows(); }
-- (void)swMaia:(UISwitch *)s { gUseMaia = s.on; savePrefs(); gLastFen = nil; }
+- (void)engSeg:(UISegmentedControl *)s {
+    gUseMaia = (s.selectedSegmentIndex == 1);
+    clampGeloToActiveRange();
+    savePrefs(); gLastFen = nil;
+    if (gUseMaia) ensureMaiaLoaded();
+    dbg([NSString stringWithFormat:@"engine: %@ — strength range %@", gUseMaia ? @"MAIA" : @"SF18",
+         gUseMaia ? @"900–2000 (human-like)" : @"400–3500"]);
+    [self populate];
+}
+- (void)swAutoPlay:(UISwitch *)s {
+    gAutoPlay = s.on; savePrefs();
+    dbg([NSString stringWithFormat:@"Auto play: %@", gAutoPlay ? @"ON" : @"OFF"]);
+    if (!gAutoPlay) gLastAutoPlayed = nil;
+}
+- (void)swAutoJitter:(UISwitch *)s {
+    gAutoPlayJitterEnabled = s.on;
+    savePrefs();
+}
+- (void)swAutoSecondBest:(UISwitch *)s {
+    gAutoPlaySecondBest = s.on;
+    savePrefs();
+}
+- (void)apDelaySlide:(UISlider *)s {
+    double v = round(s.value * 10.0) / 10.0; s.value = v;
+    _apDelayValue.text = [NSString stringWithFormat:@"%.1fs", v];
+}
+- (void)apDelayDone:(UISlider *)s {
+    gAutoPlayDelay = round(s.value * 10.0) / 10.0;
+    savePrefs();
+    dbg([NSString stringWithFormat:@"Auto play delay: %.1fs", gAutoPlayDelay]);
+}
+- (void)apJitterSlide:(UISlider *)s {
+    double v = round(s.value * 10.0) / 10.0; s.value = v;
+    _apJitterValue.text = [NSString stringWithFormat:@"±%.1fs", v];
+}
+- (void)apJitterDone:(UISlider *)s {
+    gAutoPlayJitterRange = round(s.value * 10.0) / 10.0;
+    if (gAutoPlayJitterRange < 0) gAutoPlayJitterRange = 0;
+    if (gAutoPlayJitterRange > 2.0) gAutoPlayJitterRange = 2.0;
+    savePrefs();
+}
+- (void)apSecondPctSlide:(UISlider *)s {
+    NSInteger v = (NSInteger)lround(s.value);
+    if (v < 0) v = 0;
+    if (v > 50) v = 50;
+    s.value = (float)v;
+    _apSecondPctValue.text = [NSString stringWithFormat:@"%ld%%", (long)v];
+}
+- (void)apSecondPctDone:(UISlider *)s {
+    NSInteger v = (NSInteger)lround(s.value);
+    if (v < 0) v = 0;
+    if (v > 50) v = 50;
+    gAutoPlaySecondBestPct = v;
+    savePrefs();
+}
+- (void)pgnTap {
+    NSString *pgn = buildPGN();
+    if (!pgn.length) {
+        showQualityToast(@"No game moves yet", [UIColor systemOrangeColor]);
+        return;
+    }
+    [UIPasteboard generalPasteboard].string = pgn;
+    showQualityToast(@"📜 PGN copied", CH_ACCENT);
+}
+- (void)copyFenTap {
+    NSString *fen = gLastFen;
+    if (!fen.length) {
+        showQualityToast(@"No position yet", [UIColor systemOrangeColor]);
+        return;
+    }
+    [UIPasteboard generalPasteboard].string = fen;
+    showQualityToast(@"FEN copied", CH_ACCENT);
+    dbg([NSString stringWithFormat:@"copied FEN: %@", fen]);
+}
+- (void)preferredTap {
+    gArrowCount   = 3;
+    gArrowAlpha   = 0.3;
+    gShowWinPct   = YES;
+    gArrowThick   = 0.7;
+    gUseMaia      = YES;
+    gAutoPlay     = NO;
+    gAutoPlayJitterEnabled = NO;
+    gAutoPlayJitterRange = 1.0;
+    gAutoPlaySecondBest = NO;
+    gAutoPlaySecondBestPct = 10;
+    gElo          = 1000;
+    gLastFen      = nil;
+    gLastAutoPlayed = nil;
+    savePrefs();
+    resetAccuracy();
+    dbg(@"preset: preferred (ban-safe) applied");
+    showQualityToast(@"⚡ Ban-Safe Preset", CH_ACCENT);
+    [self populate];
+}
 - (void)enableTap { gEnabled = !gEnabled; savePrefs(); if (!gEnabled) clearArrow(); [self populate]; }
 - (void)debugTap {
     [self animateOut];
@@ -1407,6 +1816,303 @@ static BOOL isBoardOnScreen(UIView *v) {
     return (visArea / ownArea) > 0.5;
 }
 
+#pragma mark - Eval Bar (horizontal, above board)
+
+static NSMutableArray *gEvalBarLayers = nil;
+
+static void removeEvalBar(void) {
+    for (CALayer *l in gEvalBarLayers) [l removeFromSuperlayer];
+    [gEvalBarLayers removeAllObjects];
+}
+
+static void updateEvalBar(void) {
+    removeEvalBar();
+    UIView *board = gDrawBoard ?: gBoardView ?: gBotBoard;
+    if (!gShowEvalBar || !gBarHave || !board || !board.window || !isBoardOnScreen(board)) return;
+
+    CGFloat barH = 16;
+    CGRect bF = board.bounds;
+    if (bF.size.width < 60) return;
+    BOOL masked = board.layer.masksToBounds;
+
+    // horizontal bar sitting above the board, raised by an extra bar-height so
+    // it never touches the top rank; falls back to an overlay pinned inside
+    // the top edge if the board clips its own layer
+    CGRect bar = CGRectMake(2, masked ? 3 : -(barH * 2 + 6), bF.size.width - 4, barH);
+
+    double frac = 0.5;
+    NSString *txt;
+    if (gBarIsMate) {
+        BOOL whiteMates = gBarMateWhite > 0;
+        frac = whiteMates ? 0.95 : 0.05;
+        txt = [NSString stringWithFormat:@"%@M%d", whiteMates ? @"" : @"-", abs(gBarMateWhite)];
+    } else {
+        double wp = evalToWinPct(gBarWhiteEval, NO, 0);
+        frac = MIN(0.97, MAX(0.03, wp / 100.0));
+        txt = [NSString stringWithFormat:@"%+.1f", gBarWhiteEval];
+    }
+    UIColor *txtColor = frac >= 0.5 ? UIColor.blackColor : UIColor.whiteColor;
+
+    if (!gEvalBarLayers) gEvalBarLayers = [NSMutableArray array];
+
+    CALayer *bg = [CALayer layer];
+    bg.frame = bar;
+    bg.backgroundColor = [UIColor colorWithWhite:0.13 alpha:0.94].CGColor;
+    bg.cornerRadius = 4;
+    bg.zPosition = 10005;
+
+    CALayer *fill = [CALayer layer];
+    fill.frame = CGRectMake(1, 1, MAX(2, (bar.size.width - 2) * frac), barH - 2);
+    fill.backgroundColor = [UIColor whiteColor].CGColor;
+    fill.cornerRadius = 3;
+    fill.zPosition = 10006;
+
+    CATextLayer *tl = [CATextLayer layer];
+    tl.frame = bar;
+    tl.string = txt;
+    tl.fontSize = 11;
+    tl.alignmentMode = kCAAlignmentCenter;
+    tl.foregroundColor = txtColor.CGColor;
+    tl.contentsScale = [UIScreen mainScreen].scale;
+    tl.zPosition = 10007;
+
+    [board.layer addSublayer:bg];
+    [board.layer addSublayer:fill];
+    [board.layer addSublayer:tl];
+    [gEvalBarLayers addObjectsFromArray:@[bg, fill, tl]];
+}
+
+static BOOL detectBoardFlipped(UIView *board) {
+    if (gForcedFlip >= 0) return gForcedFlip ? YES : NO;
+    @try {
+        SEL flipSel = NSSelectorFromString(@"isFlipped");
+        if ([board respondsToSelector:flipSel]) {
+            typedef BOOL (*BoolGetter)(id, SEL);
+            return ((BoolGetter)objc_msgSend)(board, flipSel) ? YES : NO;
+        }
+        Ivar ivar = class_getInstanceVariable([board class], "_flipped");
+        if (!ivar) ivar = class_getInstanceVariable([board class], "isFlipped");
+        if (ivar) {
+            ptrdiff_t offset = ivar_getOffset(ivar);
+            return *(BOOL *)((char *)(__bridge void *)board + offset) ? YES : NO;
+        }
+    } @catch (NSException *e) {
+        dbg([NSString stringWithFormat:@"flip detect err: %@", e.reason]);
+    }
+    return NO;
+}
+
+#pragma mark - Auto Play (synthetic touches)
+
+static NSMutableArray *gFakeTouches = nil;
+
+static NSMutableSet *sDumpedClasses = nil;
+
+static void dumpMoveSelectors(id obj, NSString *tag) {
+    if (!obj) return;
+    Class c = object_getClass(obj);
+    if (!c) return;
+    if (!sDumpedClasses) sDumpedClasses = [NSMutableSet set];
+    NSString *key = [tag stringByAppendingString:NSStringFromClass(c)];
+    if ([sDumpedClasses containsObject:key]) return;
+    [sDumpedClasses addObject:key];
+
+    NSArray *keywords = @[@"move", @"play", @"tap", @"touch", @"piece",
+                          @"select", @"square", @"drag", @"click", @"perform"];
+    unsigned int n = 0;
+    Method *methods = class_copyMethodList(c, &n);
+    if (methods) {
+        NSMutableArray *hits = [NSMutableArray array];
+        for (unsigned int i = 0; i < n && hits.count < 50; i++) {
+            NSString *name = NSStringFromSelector(method_getName(methods[i]));
+            NSString *lower = name.lowercaseString;
+            for (NSString *k in keywords) {
+                if ([lower containsString:k]) { [hits addObject:name]; break; }
+            }
+        }
+        free(methods);
+        if (hits.count)
+            dbg([NSString stringWithFormat:@"DUMP[%@] %@ (%lu): %@", tag, NSStringFromClass(c),
+                 (unsigned long)hits.count, [hits componentsJoinedByString:@", "]]);
+    }
+
+    Class meta = object_getClass(c);
+    unsigned int cn = 0;
+    Method *cmethods = class_copyMethodList(meta, &cn);
+    if (cmethods) {
+        NSMutableArray *hits = [NSMutableArray array];
+        for (unsigned int i = 0; i < cn && hits.count < 30; i++) {
+            NSString *name = NSStringFromSelector(method_getName(cmethods[i]));
+            NSString *lower = name.lowercaseString;
+            for (NSString *k in keywords) {
+                if ([lower containsString:k]) { [hits addObject:name]; break; }
+            }
+        }
+        free(cmethods);
+        if (hits.count)
+            dbg([NSString stringWithFormat:@"DUMP[%@] +(%@): %@", tag,
+                 NSStringFromClass(c), [hits componentsJoinedByString:@", "]]);
+    }
+}
+
+static UITouch *chAcquireFakeTouch(void) {
+    if (!gFakeTouches) gFakeTouches = [NSMutableArray array];
+    UITouch *t = gFakeTouches.firstObject;
+    if (!t) {
+        t = [[UITouch alloc] init];
+        [gFakeTouches addObject:t];
+    }
+    return t;
+}
+
+static void chSetKvc(id obj, NSString *key, id val) {
+    @try {
+        [obj setValue:val forKey:key];
+    } @catch (NSException *e) {
+        static NSMutableSet *sWarnedKeys = nil;
+        if (!sWarnedKeys) sWarnedKeys = [NSMutableSet set];
+        if (![sWarnedKeys containsObject:key]) {
+            [sWarnedKeys addObject:key];
+            dbg([NSString stringWithFormat:@"autoplay: UITouch key '%@' unsupported, skipped", key]);
+        }
+    }
+}
+
+static void chFakeTouchFire(CGPoint ptInWin, UIWindow *win, UITouchPhase phase) {
+    @try {
+        UITouch *touch = chAcquireFakeTouch();
+        chSetKvc(touch, @"_phase", @(phase));
+        chSetKvc(touch, @"_locationInWindow", [NSValue valueWithCGPoint:ptInWin]);
+        chSetKvc(touch, @"_tapCount", @1);
+        chSetKvc(touch, @"_timestamp", @(NSDate.date.timeIntervalSince1970));
+        chSetKvc(touch, @"_window", win);
+
+        UIView *target = [win hitTest:ptInWin withEvent:nil] ?: win;
+        chSetKvc(touch, @"_view", target);
+
+        static UIEvent *sCarrierEvent = nil;
+        static dispatch_once_t once;
+        dispatch_once(&once, ^{ sCarrierEvent = [[UIEvent alloc] init]; });
+
+        NSSet *touches = [NSSet setWithObject:touch];
+        switch (phase) {
+            case UITouchPhaseBegan:
+                [target touchesBegan:touches withEvent:sCarrierEvent];
+                break;
+            case UITouchPhaseMoved:
+                [target touchesMoved:touches withEvent:sCarrierEvent];
+                break;
+            case UITouchPhaseCancelled:
+                [target touchesCancelled:touches withEvent:sCarrierEvent];
+                break;
+            default:
+                [target touchesEnded:touches withEvent:sCarrierEvent];
+                break;
+        }
+    } @catch (NSException *e) {
+        dbg([NSString stringWithFormat:@"autoplay touch err: %@", e.reason]);
+    }
+}
+
+static BOOL playMoveOnBoard(NSString *uci, NSString *fenSnap, UIView *preferredBoard) {
+    if (!gEnabled || !gAutoPlay) return NO;
+    if (![fenSnap isEqualToString:gLastFen]) return NO;
+
+    UIView *board = preferredBoard;
+    if (!board || !board.window || !isBoardOnScreen(board)) {
+        board = gDrawBoard ?: gBoardView ?: gBotBoard;
+    }
+    if (!board || !board.window || !isBoardOnScreen(board)) { dbg(@"autoplay: no board"); return NO; }
+
+    int fromSq = 0, toSq = 0;
+    if (!parseMoveUCI(uci, &fromSq, &toSq)) { dbg(@"autoplay: bad move"); return NO; }
+
+    BOOL flipped = detectBoardFlipped(board);
+    CGRect winRect = [board convertRect:board.bounds toView:nil];
+    UIWindow *win = board.window;
+
+    CGPoint fromLocal = squareToPoint(fromSq, board.bounds, flipped);
+    CGPoint toLocal   = squareToPoint(toSq,   board.bounds, flipped);
+    CGPoint fromWin = CGPointMake(winRect.origin.x + fromLocal.x, winRect.origin.y + fromLocal.y);
+    CGPoint toWin   = CGPointMake(winRect.origin.x + toLocal.x,   winRect.origin.y + toLocal.y);
+
+    BOOL promo = uci.length > 4;
+    CGPoint promoWin = CGPointZero;
+    if (promo) {
+        int qSq = (gSide == 1) ? toSq + 8 : toSq - 8;
+        if (qSq < 0 || qSq > 63) qSq = toSq;
+        CGPoint qLocal = squareToPoint(qSq, board.bounds, flipped);
+        promoWin = CGPointMake(winRect.origin.x + qLocal.x, winRect.origin.y + qLocal.y);
+    }
+
+    dbg([NSString stringWithFormat:@"autoplay: %@", uci]);
+    showQualityToast(@"▶ Auto Play", CH_ACCENT);
+
+    chFakeTouchFire(fromWin, win, UITouchPhaseBegan);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.03 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        chFakeTouchFire(fromWin, win, UITouchPhaseEnded);
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.09 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            chFakeTouchFire(toWin, win, UITouchPhaseBegan);
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.03 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                chFakeTouchFire(toWin, win, UITouchPhaseEnded);
+                if (promo) {
+                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.18 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                        chFakeTouchFire(promoWin, win, UITouchPhaseBegan);
+                        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.03 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                            chFakeTouchFire(promoWin, win, UITouchPhaseEnded);
+                        });
+                    });
+                }
+            });
+        });
+    });
+    return YES;
+}
+
+static void tryAutoPlay(NSString *bestmove, NSString *altMove, NSString *fenSnap, UIView *preferredBoard) {
+    if (!gAutoPlay || !gEnabled) return;
+    if (gPuzzleCtx) return;
+    if (bestmove.length < 4) return;
+    if (!fenSnap.length || [fenSnap isEqualToString:gLastAutoPlayed]) return;
+
+    NSString *chosen = bestmove;
+    if (gAutoPlaySecondBest && altMove.length >= 4 && ![altMove isEqualToString:bestmove]) {
+        uint32_t chance = (uint32_t)MAX(0, MIN(100, (int)gAutoPlaySecondBestPct));
+        if (chance > 0 && arc4random_uniform(100) < chance) chosen = altMove;
+    }
+
+    double delay = gAutoPlayDelay;
+    if (gAutoPlayJitterEnabled && gAutoPlayJitterRange > 0.0) {
+        double r = gAutoPlayJitterRange;
+        double jit = ((double)arc4random_uniform(2001) / 1000.0 - 1.0) * r;
+        delay += jit;
+    }
+    if (delay < 0.0) delay = 0.0;
+    if (delay > 6.0) delay = 6.0;
+
+    __block int retries = 0;
+    __block void (^attempt)(void) = nil;
+    __weak void (^weakAttempt)(void) = nil;
+    attempt = ^{
+        if (!gAutoPlay || !gEnabled) return;
+        if (![fenSnap isEqualToString:gLastFen]) return;
+        if ([fenSnap isEqualToString:gLastAutoPlayed]) return;
+        if (playMoveOnBoard(chosen, fenSnap, preferredBoard)) {
+            gLastAutoPlayed = [fenSnap copy];
+            return;
+        }
+        retries++;
+        if (retries < 15) {
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.12 * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), weakAttempt);
+        }
+    };
+    weakAttempt = attempt;
+
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), weakAttempt);
+}
+
 static void applyEngineResult(NSString *bestmove, NSArray *extraMoves, BOOL isMate, int mateIn,
                               double rawEval, UIView *drawBoard) {
 
@@ -1416,6 +2122,12 @@ static void applyEngineResult(NSString *bestmove, NSArray *extraMoves, BOOL isMa
 
     gLastEval = isMate ? (mateIn > 0 ? 999 : -999) : evalForUs;
     gHasEval = YES;
+
+    // eval bar data (white perspective)
+    gBarWhiteEval = rawEval;
+    gBarIsMate = isMate;
+    gBarMateWhite = isMate ? ((gMyColor == 1) ? -mateIn : mateIn) : 0;
+    gBarHave = YES;
 
     NSString *evalStr = @"";
     NSString *btnText = @"♟";
@@ -1435,29 +2147,14 @@ static void applyEngineResult(NSString *bestmove, NSArray *extraMoves, BOOL isMa
     updateFloatBtn(btnText);
 
     UIView *board = drawBoard;
+    NSString *altMove = nil;
+    if (extraMoves.count > 0) {
+        NSDictionary *c = extraMoves.firstObject;
+        if ([c isKindOfClass:[NSDictionary class]]) altMove = c[@"move"];
+    }
     if (!board || !board.window) board = gDrawBoard ?: gBoardView;
     if (board) {
-        BOOL flipped = NO;
-        if (gForcedFlip >= 0) {
-            flipped = gForcedFlip ? YES : NO;
-        } else {
-            @try {
-                SEL flipSel = NSSelectorFromString(@"isFlipped");
-                if ([board respondsToSelector:flipSel]) {
-                    typedef BOOL (*BoolGetter)(id, SEL);
-                    flipped = ((BoolGetter)objc_msgSend)(board, flipSel);
-                } else {
-                    Ivar ivar = class_getInstanceVariable([board class], "_flipped");
-                    if (!ivar) ivar = class_getInstanceVariable([board class], "isFlipped");
-                    if (ivar) {
-                        ptrdiff_t offset = ivar_getOffset(ivar);
-                        flipped = *(BOOL *)((char *)(__bridge void *)board + offset);
-                    }
-                }
-            } @catch (NSException *e) {
-                dbg([NSString stringWithFormat:@"flip detect err: %@", e.reason]);
-            }
-        }
+        BOOL flipped = detectBoardFlipped(board);
         double arrowEval = isMate ? (mateIn > 0 ? 99 : -99) : evalForUs;
         NSMutableArray *arrows = [NSMutableArray array];
         [arrows addObject:@{@"move": bestmove, @"eval": @(arrowEval), @"rank": @0,
@@ -1470,9 +2167,11 @@ static void applyEngineResult(NSString *bestmove, NSArray *extraMoves, BOOL isMa
             rank++;
         }
         drawArrowsOnBoard(arrows, board, flipped);
+        updateEvalBar();
     } else {
         dbg(@"no board ref for arrow");
     }
+    tryAutoPlay(bestmove, altMove, gLastFen, board);
 }
 
 static BOOL fenHasBothKings(NSString *fen) {
@@ -1485,10 +2184,170 @@ static BOOL fenHasBothKings(NSString *fen) {
     return K == 1 && k == 1;
 }
 
+static NSArray<NSString *> *maiaCandidatePaths(void) {
+    NSMutableArray *c = [@[
+        @"/var/jb/Library/Application Support/Chess/maia3_5m.mlpackage",
+        @"/Library/Application Support/Chess/maia3_5m.mlpackage",
+    ] mutableCopy];
+    NSString *res = [[NSBundle mainBundle] resourcePath];
+    if (res) {
+        [c addObject:[res stringByAppendingPathComponent:@"maia3_5m.mlpackage"]];
+        [c addObject:[res stringByAppendingPathComponent:@"Chess/maia3_5m.mlpackage"]];
+    }
+    // resolve the real jailbreak root via /private/preboot if /var/jb is unreadable from the app sandbox
+    @try {
+        NSArray *uuids = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:@"/private/preboot" error:nil];
+        for (NSString *uuid in uuids) {
+            NSString *base = [@"/private/preboot/" stringByAppendingString:uuid];
+            NSArray *subs = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:base error:nil];
+            for (NSString *s in subs) {
+                if (![s hasPrefix:@"jb-"]) continue;
+                [c addObject:[[base stringByAppendingPathComponent:s]
+                    stringByAppendingPathComponent:@"Library/Application Support/Chess/maia3_5m.mlpackage"]];
+            }
+        }
+    } @catch (NSException *e) {}
+    return c;
+}
+
+static BOOL sMaiaRetryDone = NO;
+
+static BOOL isInitialStartFEN(NSString *fen) {
+    if (!fen.length) return NO;
+    return [fen hasPrefix:@"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w "];
+}
+
+static void ensureMaiaLoaded(void) {
+    if (MaiaAvailable()) return;
+    if (sMaiaRetryDone) return;
+    sMaiaRetryDone = YES;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        for (NSString *c in maiaCandidatePaths()) {
+            if ([[NSFileManager defaultManager] fileExistsAtPath:c]) {
+                BOOL ok = MaiaLoad([c UTF8String]);
+                dbg([NSString stringWithFormat:@"maia retry load %@: %@", ok ? @"OK" : @"FAIL", c]);
+                if (ok) return;
+            }
+        }
+        // filesystem lookup failed (sandboxed app can't see /var/jb) — use the model embedded in our dylib
+        BOOL ok = MaiaLoadEmbedded();
+        dbg([NSString stringWithFormat:@"maia embedded load: %@", ok ? @"OK" : @"FAIL"]);
+    });
+}
+
+// SAN for one UCI move in the given position: board state gives piece/capture,
+// Stockfish legal-move enumeration handles disambiguation.
+static NSString *sanForMove(NSString *fen, NSString *uci) {
+    parseFEN(fen);
+    int from = 0, to = 0;
+    if (!parseMoveUCI(uci, &from, &to)) return nil;
+    if (from < 0 || from > 63 || to < 0 || to > 63) return nil;
+    char piece = gBoard[from];
+    if (piece == ' ') return nil;
+    char up = (char)toupper((unsigned char)piece);
+
+    if (up == 'K' && abs((to % 8) - (from % 8)) == 2)
+        return (to % 8 == 6) ? @"O-O" : @"O-O-O";
+
+    BOOL isPawn = (up == 'P');
+    BOOL capture = (gBoard[to] != ' ');
+    if (!capture && isPawn && to == gEp) capture = YES;
+
+    NSMutableString *san = [NSMutableString string];
+    if (!isPawn) [san appendFormat:@"%c", up];
+    else if (capture) [san appendFormat:@"%c", 'a' + (from % 8)];
+
+    if (!isPawn && up != 'K') {
+        char buf[256 * 6];
+        int n = StockfishLegalMoves([fen UTF8String], buf, 256);
+        BOOL anyOther = NO, sameFile = NO, sameRank = NO;
+        for (int i = 0; i < n; i++) {
+            NSString *m = [NSString stringWithFormat:@"%s", buf + i * 6];
+            int f2 = 0, t2 = 0;
+            if (!parseMoveUCI(m, &f2, &t2)) continue;
+            if (f2 == from || t2 != to) continue;
+            if (gBoard[f2] != piece) continue;
+            anyOther = YES;
+            if ((f2 % 8) == (from % 8)) sameFile = YES;
+            if ((f2 / 8) == (from / 8)) sameRank = YES;
+        }
+        if (anyOther) {
+            if (!sameFile)      [san appendFormat:@"%c", 'a' + (from % 8)];
+            else if (!sameRank) [san appendFormat:@"%c", '1' + (from / 8)];
+            else                [san appendFormat:@"%c%c", 'a' + (from % 8), '1' + (from / 8)];
+        }
+    }
+
+    if (capture) [san appendString:@"x"];
+    [san appendFormat:@"%c%c", 'a' + (to % 8), '1' + (to / 8)];
+    char promo = (uci.length > 4) ? (char)toupper([uci characterAtIndex:4]) : 0;
+    if (promo) [san appendFormat:@"=%c", promo];
+    return san;
+}
+
+static NSString *buildPGN(void) {
+    if (!gUciSeq.length || !gPgnStartFen.length) return nil;
+
+    NSArray *tokens = [gUciSeq componentsSeparatedByString:@" "];
+    NSMutableArray *sans = [NSMutableArray array];
+
+    parseFEN(gPgnStartFen);
+    NSInteger moveNo = gFull;
+    BOOL blackFirst = (gSide == 1);
+
+    for (NSString *tok in tokens) {
+        if (tok.length < 4) continue;
+        NSString *fen = generateFEN();
+        NSString *san = sanForMove(fen, tok);
+        if (!san.length) return nil;
+        [sans addObject:san];
+        int from = 0, to = 0;
+        parseMoveUCI(tok, &from, &to);
+        char promo = (tok.length > 4) ? (char)tolower([tok characterAtIndex:4]) : 0;
+        applyMove(from, to, promo);
+    }
+    if (!sans.count) return nil;
+
+    NSMutableString *body = [NSMutableString string];
+    NSInteger n = moveNo;
+    if (!blackFirst) {
+        for (NSUInteger i = 0; i < sans.count; i += 2) {
+            [body appendFormat:@"%@%@. %@", body.length ? @" " : @"", @(n++), sans[i]];
+            if (i + 1 < sans.count) [body appendFormat:@" %@", sans[i + 1]];
+        }
+    } else {
+        [body appendFormat:@"%ld... %@", (long)n, sans[0]];
+        for (NSUInteger i = 1; i < sans.count; i += 2) {
+            [body appendFormat:@" %ld. %@", ++n, sans[i]];
+            if (i + 1 < sans.count) [body appendFormat:@" %@", sans[i + 1]];
+        }
+    }
+
+    NSDateFormatter *df = [[NSDateFormatter alloc] init];
+    df.dateFormat = @"yyyy.MM.dd";
+
+    NSMutableString *pgn = [NSMutableString string];
+    [pgn appendFormat:
+        @"[Event \"Chess Assistant\"]\n"
+         "[Site \"?\"]\n"
+         "[Date \"%@\"]\n"
+         "[Round \"?\"]\n"
+         "[White \"?\"]\n"
+         "[Black \"?\"]\n"
+         "[Result \"*\"]\n",
+        [df stringFromDate:[NSDate date]]];    NSString *startpos = @"rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+    if (![gPgnStartFen isEqualToString:startpos]) {
+        [pgn appendFormat:@"[SetUp \"1\"]\n[FEN \"%@\"]\n", gPgnStartFen];
+    }
+    [pgn appendFormat:@"\n%@\n*\n", body];
+    return pgn;
+}
+
 static void fetchMove(NSString *fen) {
     if (!gEnabled || !fen.length) return;
     if (!fenHasBothKings(fen)) return;
     if (!StockfishFenLegal([fen UTF8String])) { dbg(@"skip illegal pos"); return; }
+    if (isInitialStartFEN(fen)) gLastAutoPlayed = nil;
     if ([fen isEqualToString:gLastFen]) return;
 
     if (gFetching && gLastFetch && [[NSDate date] timeIntervalSinceDate:gLastFetch] > 5.0) {
@@ -1505,6 +2364,7 @@ static void fetchMove(NSString *fen) {
 
     BOOL stmWhite = ([fen rangeOfString:@" w "].location != NSNotFound);
 
+    if (gUseMaia) ensureMaiaLoaded();
     if (gUseMaia && MaiaAvailable()) {
         dbg([NSString stringWithFormat:@"maia elo%ld: %@", (long)gElo,
              [fen substringToIndex:MIN(fen.length, 45)]]);
@@ -1534,7 +2394,7 @@ static void fetchMove(NSString *fen) {
         });
 
         if (gTrackQuality) {
-            NSInteger gdepth = eloToDepth(gElo);
+            NSInteger gdepth = MAX(14, eloToDepth(gElo));
             EngineGo([fen UTF8String], (int)gdepth, (int)gElo, 2,
                      ^(const EngineLine *lines, int count) {
                 BOOL hasScore = (count > 0) ? lines[0].hasScore : NO;
@@ -1756,8 +2616,10 @@ static void enginePollTick(void) {
         !(gBotBoard  && isBoardOnScreen(gBotBoard)) &&
         !(gDrawBoard && isBoardOnScreen(gDrawBoard))) {
         clearArrow();
+        removeEvalBar();
         updateFloatBtn(@"♟");
         gHasEval = NO;
+        gBarHave = NO;
         gLastFen = nil;
         resetAccuracy();
     }
@@ -1778,6 +2640,7 @@ static void enginePollTick(void) {
     if (gOnlineGame) {
         if (gOnlineDrawBoard) gDrawBoard = gOnlineDrawBoard;
         reassertArrow(gDrawBoard);
+        updateEvalBar();
         @try {
             typedef NSString *(*SG)(id, SEL);
             SEL encSel = NSSelectorFromString(@"encodedMoves");
@@ -1859,6 +2722,7 @@ static void enginePollTick(void) {
         gEngineCtrl = gHookedEngine;
         dbg([NSString stringWithFormat:@"ENGINE: via hook %@",
              NSStringFromClass([gHookedEngine class])]);
+        dumpMoveSelectors(gHookedEngine, @"engine");
     }
 
     if (!gEngineCtrl) {
@@ -1870,6 +2734,7 @@ static void enginePollTick(void) {
                 gEngineCtrl = found;
                 dbg([NSString stringWithFormat:@"ENGINE: found %@",
                      NSStringFromClass([found class])]);
+                dumpMoveSelectors(found, @"engine");
                 break;
             }
         }
@@ -1977,7 +2842,6 @@ static NSString *gLastBotPlacement = nil;
 static int       gBotSide = 0;
 static char      gPrevBotBoard[8][8];
 static BOOL      gHavePrevBoard = NO;
-static BOOL      gPuzzleCtx = NO;
 
 static NSString *buildBotFEN(UIView *board, int *outUserColor) {
     const uint8_t *base = (const uint8_t *)(__bridge const void *)board;
@@ -2085,6 +2949,7 @@ static NSString *buildBotFEN(UIView *board, int *outUserColor) {
         } else if ([pl isEqualToString:startpos]) {
             gBotSide = 0;
             if (gAccCount > 0) resetAccuracy();
+            [gUciSeq setString:@""];
         } else if (gHavePrevBoard) {
 
             int whiteMoved = 0, blackMoved = 0;
@@ -2131,6 +2996,7 @@ static BOOL processBotBoard(UIView *board) {
         return NO;
     if (!isBoardOnScreen(board)) return NO;
     gBotBoard = board;
+    dumpMoveSelectors(board, @"board");
 
     BOOL inBotGame = NO;
     gPuzzleCtx = NO;
@@ -2321,6 +3187,7 @@ static void hook_layoutSubviews(id self, SEL _cmd) {
     gBoardView = boardSelf;
 
     reassertArrow(gDrawBoard);
+    updateEvalBar();
 
     NSDate *now = [NSDate date];
     if (gLastLayoutCheck && [now timeIntervalSinceDate:gLastLayoutCheck] < 0.5) return;
@@ -2420,6 +3287,7 @@ static void hook_layoutSubviews(id self, SEL _cmd) {
             SEL encSel = NSSelectorFromString(@"encodedMoves");
             if ([game respondsToSelector:encSel]) {
                 gOnlineGame = game;
+                dumpMoveSelectors(game, @"game");
                 gOnlineSeen = [NSDate date];
                 gBotBoard = nil;
                 NSString *encoded = strGet(game, encSel);
@@ -2634,6 +3502,7 @@ static void hook_setEncodedMoves(id self, SEL _cmd, NSString *encoded) {
     @try {
         gOnlineGame = self;
         gOnlineSeen = [NSDate date];
+        dumpMoveSelectors(self, @"game");
         typedef NSString *(*StrGetter)(id, SEL);
         StrGetter strGet = (StrGetter)objc_msgSend;
         SEL iFenSel = NSSelectorFromString(@"initialFEN");
@@ -2666,8 +3535,9 @@ static void hook_setEncodedMoves(id self, SEL _cmd, NSString *encoded) {
         setupFloatingButton();
 
         NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
-        if (![d boolForKey:PREF_SHOWN]) {
+        if (![d boolForKey:PREF_SHOWN] || ![d boolForKey:PREF_CREDIT2]) {
             [d setBool:YES forKey:PREF_SHOWN];
+            [d setBool:YES forKey:PREF_CREDIT2];
             [d synchronize];
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
                            dispatch_get_main_queue(), ^{
@@ -2824,26 +3694,24 @@ static void installBoardHooks(void) {
     gLoadTime = [NSDate date];
     gOrigLayouts = [NSMutableDictionary dictionary];
     loadPrefs();
-    dbg(@"loaded v2.4 (SF16 + Maia3)");
+    dbg(@"loaded v2.5.1 (SF18 + Maia3)");
     EngineStart();
 
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
-        NSString *res = [[NSBundle mainBundle] resourcePath];
-        NSMutableArray *candidates = [@[
-            @"/var/jb/Library/Application Support/Chess/maia3_5m.mlpackage",
-            @"/Library/Application Support/Chess/maia3_5m.mlpackage",
-        ] mutableCopy];
-        if (res) {
-            [candidates addObject:[res stringByAppendingPathComponent:@"maia3_5m.mlpackage"]];
-            [candidates addObject:[res stringByAppendingPathComponent:@"Chess/maia3_5m.mlpackage"]];
-            [candidates addObject:[res stringByAppendingPathComponent:@"Frameworks/Chess.dylib/maia3_5m.mlpackage"]];
-        }
+        NSArray *candidates = maiaCandidatePaths();
+        __block BOOL found = NO;
         for (NSString *c in candidates) {
             if ([[NSFileManager defaultManager] fileExistsAtPath:c]) {
+                found = YES;
                 BOOL ok = MaiaLoad([c UTF8String]);
                 dbg([NSString stringWithFormat:@"maia load %@: %@", ok ? @"OK" : @"FAIL", c]);
                 break;
             }
+        }
+        if (!found) {
+            dbg(@"maia: model not on disk — using embedded copy");
+            BOOL ok = MaiaLoadEmbedded();
+            dbg([NSString stringWithFormat:@"maia embedded load: %@", ok ? @"OK" : @"FAIL"]);
         }
     });
 
